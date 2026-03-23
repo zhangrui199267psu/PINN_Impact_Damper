@@ -1,331 +1,346 @@
 """
 dispersion_curve.py
 -------------------
-Stage 2: Compute the nonlinear dispersion curve of a 1-D meta-impactor lattice
-using the parametric PINN trained in Stage 1.
+Stage 2: Nonlinear dispersion curve of a 1-D meta-impactor lattice.
 
-Background
-----------
-For an infinite 1-D chain of primary masses m connected by springs k_c, each
-carrying an internal impactor of mass μ, the Bloch boundary condition reduces
-the lattice problem to a single-unit-cell SDOF system with effective stiffness
+What is a dispersion curve?
+----------------------------
+A dispersion curve plots the relationship between:
 
-    k_eff(κ) = 2 · k_c · (1 − cos κ)                           (1)
+  ω  — angular frequency (rad/s), how fast a wave oscillates in TIME
+  k  — wavenumber (rad / unit cell), how many wave cycles fit in SPACE
 
-where κ ∈ [0, π] is the wavenumber (normalised by the lattice spacing d = 1).
+  ω = ω(k)  is the dispersion relation.
 
-The linear dispersion (no impactor) is
+For a 1-D ring (periodic) lattice with N unit cells, the allowed wavenumbers are:
 
-    ω_lin(κ) = √(k_eff / m) = 2 · √(k_c / m) · |sin(κ/2)|     (2)
+  k_n = 2π·n / N,   n = 0, 1, …, N/2                  (Brillouin zone boundary at k = π)
 
-With impact dampers present the dispersion becomes amplitude-dependent and
-nonlinear.  The parametric PINN trained in Stage 1 maps
+The linear (no impactor) acoustic branch for a monoatomic chain is:
 
-    (t, m, μ, k, c, D) → x(t)
+  ω_lin(k) = 2·√(K/M)·|sin(k/2)|                       (1)
 
-for any k within the training range.  Sweeping κ and querying the predictor
-with k = k_eff(κ) gives the full time series; FFT extracts ω.
+where K is the inter-cell spring stiffness and M is the primary mass.
+
+With impact dampers present the dispersion becomes NONLINEAR and
+AMPLITUDE-DEPENDENT: the curve shifts with excitation level.
+
+Algorithm (2-D FFT method — the correct approach)
+--------------------------------------------------
+1.  Simulate a ring of N coupled meta-impactor unit cells for time T.
+    Each cell n has primary mass M (spring-coupled to neighbours) and
+    free-flying impactor m (impacts when |x_n − y_n| = D).
+    Equations of motion BETWEEN impacts:
+
+        M ẍ_n + c ẋ_n + K(2 x_n − x_{n-1} − x_{n+1}) = 0          (2)
+        m ÿ_n = 0   (free flight)
+
+    At each impact in cell n: velocity update via momentum + restitution.
+
+2.  Record x_n(t): shape (N, T_steps) — the spatiotemporal field.
+
+3.  Apply 2-D FFT in space (n → k) and time (t → ω):
+
+        S(k, ω) = |FFT_2D [x_n(t)]|²                                (3)
+
+4.  Plot S(k, ω) as a heatmap.  The dispersion relation ω(k) appears
+    as bright ridges.
 
 Usage
 -----
-from parametric_pinn_multi_case import train_parametric_pinn
-from dispersion_curve import compute_dispersion_curve, plot_dispersion_curve
+from dispersion_curve import simulate_lattice, dispersion_from_2dfft, plot_dispersion_heatmap
 
-predictor, _ = train_parametric_pinn(...)        # Stage 1
-
-kappa, curves = compute_dispersion_curve(
-    predictor,
-    k_coupling=1.0,
-    mx=1.0, my=0.3,
-    c=0.0, D=1.0,
-    yt0_values=[-0.5, -1.0, -1.5],              # amplitude sweep
-)
-plot_dispersion_curve(kappa, curves, k_coupling=1.0, mx=1.0,
-                      save_path='dispersion.png')
+t, x_nt = simulate_lattice(N=32, mx=1.0, my=0.3, k_coupling=1.0, D=1.0, T_sim=80.0)
+k_vals, omega_vals, spectrum = dispersion_from_2dfft(t, x_nt)
+plot_dispersion_heatmap(k_vals, omega_vals, spectrum, k_coupling=1.0, mx=1.0)
 """
 
 import warnings
 import numpy as np
-from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.ticker import MaxNLocator
 
 
 # ---------------------------------------------------------------------------
-# Frequency extraction from a time series
+# Lattice simulation  (RK4 + event-based impact detection)
 # ---------------------------------------------------------------------------
 
-def _extract_frequency_fft(t, x):
+def simulate_lattice(
+    N,
+    mx,
+    my,
+    k_coupling,
+    c=0.0,
+    D=1.0,
+    r=1.0,
+    T_sim=80.0,
+    n_steps=8000,
+    ic_type='random',
+    yt0_magnitude=1.0,
+    seed=0,
+):
     """
-    Dominant angular frequency via FFT.
+    Simulate a 1-D ring (periodic boundary conditions) of N meta-impactor
+    unit cells.
 
-    t, x are 1-D (possibly non-uniformly sampled: each segment has
-    equal spacing but different durations, so the concatenation is
-    piecewise-uniform).  We re-interpolate to a single uniform grid.
+    Equations of motion (between impacts)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Primary mass n:
+        M ẍ_n = −K(2 x_n − x_{n−1} − x_{n+1}) − c ẋ_n
+    Impactor n:
+        m ÿ_n = 0   (free flight)
 
-    Returns omega (rad / s), or np.nan if extraction fails.
-    """
-    t = t.flatten()
-    x = x.flatten()
-    if len(t) < 8:
-        return np.nan
+    At impact  |x_n − y_n| = D:
+        [M, m; 1, −1] · v⁺ = [M, m; −r, r] · v⁻
 
-    # Re-interpolate to uniform time grid
-    n_uniform = 4 * len(t)
-    t_uni = np.linspace(t[0], t[-1], n_uniform)
-    try:
-        x_uni = interp1d(t, x, kind='linear', fill_value='extrapolate')(t_uni)
-    except Exception:
-        return np.nan
-
-    dt = t_uni[1] - t_uni[0]
-    x_uni -= np.mean(x_uni)                        # remove DC
-
-    spectrum = np.abs(np.fft.rfft(x_uni))
-    freqs    = np.fft.rfftfreq(len(x_uni), d=dt)   # cycles / s
-
-    # Ignore DC (index 0)
-    idx_dom  = int(np.argmax(spectrum[1:])) + 1
-    omega    = 2.0 * np.pi * freqs[idx_dom]
-    return float(omega)
-
-
-def _extract_frequency_impact(impact_times):
-    """
-    Estimate frequency from mean inter-impact period.
-
-    For a limit-cycle motion impacted once per oscillation cycle,
-    the cycle period equals the mean inter-impact time.
-
-    Returns omega (rad / s), or np.nan.
-    """
-    T = np.asarray(impact_times, dtype=float)
-    if len(T) < 2:
-        return np.nan
-    T_mean = float(np.mean(T))
-    return 2.0 * np.pi / T_mean
-
-
-# ---------------------------------------------------------------------------
-# Linear dispersion (reference)
-# ---------------------------------------------------------------------------
-
-def linear_dispersion(kappa, k_coupling, mx):
-    """
-    Acoustic dispersion of a monoatomic chain (no impactor, no damping).
-
-        ω_lin(κ) = 2 · √(k_c / m) · |sin(κ/2)|
+    Periodic boundary: x_0 ≡ x_N, x_{N+1} ≡ x_1.
 
     Parameters
     ----------
-    kappa      : array-like of wavenumbers in [0, π]
-    k_coupling : float, k_c
-    mx         : float, primary mass
+    N             : int    — number of unit cells
+    mx            : float  — primary mass M
+    my            : float  — impactor mass m
+    k_coupling    : float  — inter-cell spring stiffness K
+    c             : float  — damping coefficient
+    D             : float  — impact gap
+    r             : float  — coefficient of restitution
+    T_sim         : float  — total simulation time
+    n_steps       : int    — number of time steps (dt = T_sim / n_steps)
+    ic_type       : str
+        'random'  — small random perturbation of primary masses (broadband,
+                    excites all wavenumbers simultaneously → full dispersion)
+        'impulse' — unit displacement on cell 0 only
+        'wave'    — plane wave x_n(0) = A·cos(2π·n/N) (single wavenumber)
+    yt0_magnitude : float  — initial impactor speed (same for all cells)
+    seed          : int    — random seed (for 'random' IC only)
+
+    Returns
+    -------
+    t        : (n_steps+1,) time array
+    x_nt     : (N, n_steps+1) spatiotemporal primary-mass displacements
+    """
+    rng = np.random.default_rng(seed)
+    dt  = T_sim / n_steps
+
+    # Initial conditions
+    x  = np.zeros(N)
+    xt = np.zeros(N)
+    y  = np.zeros(N)
+    yt = np.full(N, -float(yt0_magnitude))   # all impactors start moving downward
+
+    if ic_type == 'random':
+        x  = rng.uniform(-0.05, 0.05, N)     # broadband spatial perturbation
+    elif ic_type == 'impulse':
+        x[0] = D * 0.4                       # small impulse on cell 0
+    elif ic_type == 'wave':
+        n_idx = np.arange(N)
+        x = 0.1 * np.cos(2 * np.pi * n_idx / N)
+    else:
+        raise ValueError(f"Unknown ic_type: '{ic_type}'")
+
+    # Storage
+    x_history      = np.empty((N, n_steps + 1))
+    x_history[:, 0] = x.copy()
+
+    # Pre-build impact-update matrix (same for all cells)
+    A_imp = np.array([[mx, my], [1.0, -1.0]])
+    B_imp = np.array([[mx, my], [-r,   r  ]])
+
+    # RK4 time integration
+    for step in range(n_steps):
+        def _f(x_, xt_):
+            """Equations of motion for primary masses (periodic ring)."""
+            x_left  = np.roll(x_,  1)   # x_{n-1}
+            x_right = np.roll(x_, -1)   # x_{n+1}
+            xtt = (-(k_coupling * (2.0 * x_ - x_left - x_right)
+                   + c * xt_)) / mx
+            return xt_, xtt
+
+        k1v, k1a = _f(x,                   xt)
+        k2v, k2a = _f(x + 0.5*dt*k1v, xt + 0.5*dt*k1a)
+        k3v, k3a = _f(x + 0.5*dt*k2v, xt + 0.5*dt*k2a)
+        k4v, k4a = _f(x +     dt*k3v, xt +     dt*k3a)
+
+        x  += (dt / 6.0) * (k1v + 2*k2v + 2*k3v + k4v)
+        xt += (dt / 6.0) * (k1a + 2*k2a + 2*k3a + k4a)
+        y  += dt * yt                               # free flight
+
+        # Impact detection and velocity update
+        gap = x - y
+        hit = np.where(np.abs(gap) >= D)[0]
+        for n in hit:
+            v_minus = np.array([xt[n], yt[n]])
+            v_plus  = np.linalg.solve(A_imp, B_imp @ v_minus)
+            xt[n]   = v_plus[0]
+            yt[n]   = v_plus[1]
+
+        x_history[:, step + 1] = x.copy()
+
+    t = np.linspace(0.0, T_sim, n_steps + 1)
+    return t, x_history
+
+
+# ---------------------------------------------------------------------------
+# 2-D FFT dispersion extraction
+# ---------------------------------------------------------------------------
+
+def dispersion_from_2dfft(t, x_nt, skip_transient=0.25):
+    """
+    Extract the frequency–wavenumber spectrum from spatiotemporal data.
+
+    Parameters
+    ----------
+    t             : (T,) time array
+    x_nt          : (N, T) primary-mass displacement array
+    skip_transient: float in [0, 1), fraction of T to discard at the start
+                    (removes startup transient before taking FFT)
+
+    Returns
+    -------
+    k_pos     : (N//2+1,) positive wavenumbers in [0, π]  (rad / unit cell)
+    omega_pos : (T//2+1,) positive angular frequencies     (rad / s)
+    spectrum  : (N//2+1, T//2+1) one-sided power spectrum  |FFT_2D|²
+    """
+    N, T = x_nt.shape
+    dt   = float(t[1] - t[0])
+
+    # Drop the transient portion
+    i0 = int(skip_transient * T)
+    data = x_nt[:, i0:]
+    T2   = data.shape[1]
+
+    # 2-D FFT  (space axis 0 → k,  time axis 1 → ω)
+    F    = np.fft.fft2(data)
+
+    # Wavenumber axis: [0, 2π·(N-1)/N], keep positive half
+    k_all  = 2.0 * np.pi * np.fft.fftfreq(N)     # rad / unit cell
+    k_pos  = k_all[:N // 2 + 1]                   # [0, π]
+    k_pos  = np.abs(k_pos)                         # ensure positive
+
+    # Frequency axis: keep positive half
+    om_all  = 2.0 * np.pi * np.fft.fftfreq(T2, d=dt)
+    om_pos  = om_all[:T2 // 2 + 1]
+
+    # One-sided spectrum (fold negative-k and negative-ω energy into positive side)
+    # Simple approach: take the magnitude of the full FFT, then keep positive quadrant
+    spectrum_full = np.abs(F) ** 2
+    spectrum      = spectrum_full[:N // 2 + 1, :T2 // 2 + 1]
+
+    return k_pos, om_pos, spectrum
+
+
+# ---------------------------------------------------------------------------
+# Linear dispersion  (reference)
+# ---------------------------------------------------------------------------
+
+def linear_dispersion(k_wavenumber, k_coupling, mx):
+    """
+    Acoustic branch of a monoatomic ring chain (no impactor, no damping):
+
+        ω_lin(k) = 2 · √(K/M) · |sin(k/2)|
+
+    Parameters
+    ----------
+    k_wavenumber : array-like, wavenumbers in [0, π]  (rad / unit cell)
+    k_coupling   : float, inter-cell spring stiffness K
+    mx           : float, primary mass M
 
     Returns
     -------
     omega_lin : ndarray
     """
-    kappa = np.asarray(kappa, dtype=float)
-    return 2.0 * np.sqrt(k_coupling / mx) * np.abs(np.sin(kappa / 2.0))
+    k = np.asarray(k_wavenumber, dtype=float)
+    return 2.0 * np.sqrt(k_coupling / mx) * np.abs(np.sin(k / 2.0))
 
 
 # ---------------------------------------------------------------------------
-# Main sweep
+# Plots
 # ---------------------------------------------------------------------------
 
-def compute_dispersion_curve(
-    predictor,
+def plot_dispersion_heatmap(
+    k_pos,
+    omega_pos,
+    spectrum,
     k_coupling,
     mx,
-    my,
-    c=0.0,
-    D=1.0,
-    yt0_values=(-1.0,),
-    n_kappa=50,
-    kappa_min=None,
-    kappa_max=np.pi,
-    num_points=1000,
-    freq_method='fft',
-    warn_bounds=True,
-):
-    """
-    Sweep κ ∈ [kappa_min, kappa_max] and extract ω(κ) via the trained PINN.
-
-    Parameters
-    ----------
-    predictor   : ParametricSequentialPredictor from train_parametric_pinn()
-    k_coupling  : float  — inter-cell coupling stiffness k_c
-    mx          : float  — primary mass per unit cell
-    my          : float  — internal (impactor) mass per unit cell
-    c           : float  — damping coefficient (same for all κ)
-    D           : float  — impact gap
-    yt0_values  : iterable of float — initial impactor velocities (one curve per value)
-    n_kappa     : int    — number of wavenumber sample points
-    kappa_min   : float  — minimum κ (defaults to π/n_kappa to avoid k_eff ≈ 0)
-    kappa_max   : float  — maximum κ (default π, zone boundary)
-    num_points  : int    — PINN time-series points per impact segment
-    freq_method : {'fft', 'impact'}
-                    'fft'    — FFT of x(t) (better for many segments)
-                    'impact' — period from mean inter-impact time
-    warn_bounds : bool   — warn when k_eff is outside predictor training range
-
-    Returns
-    -------
-    kappa  : (n_kappa,) ndarray of wavenumbers
-    curves : list of dicts, one per yt0 value.
-             Each dict has keys:
-               'kappa'   : (n_kappa,) wavenumber array
-               'omega'   : (n_kappa,) extracted angular frequency
-               'k_eff'   : (n_kappa,) effective stiffness
-               'yt0'     : scalar, initial impactor velocity used
-               'omega_lin': (n_kappa,) linear baseline for this sweep
-    """
-    if kappa_min is None:
-        kappa_min = np.pi / n_kappa         # avoid κ = 0 (k_eff = 0)
-
-    kappa   = np.linspace(kappa_min, kappa_max, n_kappa)
-    k_eff   = 2.0 * k_coupling * (1.0 - np.cos(kappa))
-    om_lin  = linear_dispersion(kappa, k_coupling, mx)
-
-    # Attempt to read predictor training bounds (for out-of-range warning)
-    try:
-        # The first model's lb/ub store the training range
-        lb_k = float(predictor.models[0].lb[0, 3])   # index 3 = k channel
-        ub_k = float(predictor.models[0].ub[0, 3])
-    except Exception:
-        lb_k, ub_k = None, None
-
-    curves = []
-
-    for yt0 in yt0_values:
-        print(f'\nSweeping κ for yt0 = {yt0:.2f}  |  {n_kappa} points')
-        print(f'  k_eff range: [{k_eff.min():.4f}, {k_eff.max():.4f}]', end='')
-        if lb_k is not None:
-            print(f'  (training k: [{lb_k:.4f}, {ub_k:.4f}])', end='')
-            if warn_bounds and (k_eff.min() < lb_k or k_eff.max() > ub_k):
-                warnings.warn(
-                    f"k_eff range [{k_eff.min():.3f}, {k_eff.max():.3f}] partly outside "
-                    f"training range [{lb_k:.3f}, {ub_k:.3f}]. "
-                    "Retrain with wider k bounds for accurate extrapolation.",
-                    UserWarning, stacklevel=2,
-                )
-        print()
-
-        omega_vals = np.full(n_kappa, np.nan)
-
-        for i, (kap, keff) in enumerate(zip(kappa, k_eff)):
-            try:
-                res = predictor.predict(
-                    mx=mx, my=my, k=float(keff), c=c, D=D,
-                    x0=0.0, xt0=0.0, y0=0.0, yt0=float(yt0),
-                    num_points=num_points,
-                )
-                if freq_method == 'fft':
-                    omega = _extract_frequency_fft(res['time'], res['x'])
-                elif freq_method == 'impact':
-                    omega = _extract_frequency_impact(res['impact_times'])
-                else:
-                    raise ValueError(f"Unknown freq_method: '{freq_method}'")
-            except Exception as exc:
-                warnings.warn(f"κ={kap:.3f}: prediction failed — {exc}")
-                omega = np.nan
-
-            omega_vals[i] = omega
-
-            if (i + 1) % max(1, n_kappa // 5) == 0 or i == 0:
-                status = f'{omega:.4f}' if not np.isnan(omega) else 'NaN'
-                print(f'  [{i+1:3d}/{n_kappa}]  κ={kap:.3f}  k_eff={keff:.3f}  ω={status}')
-
-        curves.append({
-            'kappa':    kappa,
-            'omega':    omega_vals,
-            'k_eff':    k_eff,
-            'yt0':      float(yt0),
-            'omega_lin': om_lin,
-        })
-
-    return kappa, curves
-
-
-# ---------------------------------------------------------------------------
-# Plotting
-# ---------------------------------------------------------------------------
-
-def plot_dispersion_curve(
-    kappa,
-    curves,
-    k_coupling,
-    mx,
-    normalize_kappa=True,
+    dB_range=40.0,
     save_path=None,
     figsize=(7, 5),
+    omega_max=None,
 ):
     """
-    Plot dispersion curve(s) with the linear baseline.
+    Plot |FFT_2D(x_n(t))|² as a (k, ω) heatmap with the linear dispersion overlay.
 
     Parameters
     ----------
-    kappa, curves   : outputs of compute_dispersion_curve()
-    k_coupling, mx  : lattice parameters (for linear baseline label)
-    normalize_kappa : if True, x-axis is κ/π ∈ [0, 1]; otherwise κ in rad
-    save_path       : optional file path to save the figure
-    figsize         : (width, height) in inches
+    k_pos, omega_pos, spectrum : outputs of dispersion_from_2dfft()
+    k_coupling, mx : lattice parameters (for the linear baseline)
+    dB_range       : dynamic range to display in dB (default 40 dB)
+    save_path      : optional file path to save the figure
+    figsize        : (w, h) in inches
+    omega_max      : clip the ω axis at this value (None = auto)
 
     Returns
     -------
     fig, ax
     """
     mpl.rcParams.update({
-        'font.family':   'Times New Roman',
+        'font.family':      'Times New Roman',
         'mathtext.fontset': 'custom',
-        'mathtext.rm':   'Times New Roman',
-        'mathtext.it':   'Times New Roman:italic',
-        'mathtext.bf':   'Times New Roman:bold',
-        'pdf.fonttype':  42,
-        'ps.fonttype':   42,
+        'mathtext.rm':      'Times New Roman',
+        'mathtext.it':      'Times New Roman:italic',
+        'mathtext.bf':      'Times New Roman:bold',
+        'pdf.fonttype':     42,
+        'ps.fonttype':      42,
     })
+    FS = 20
+    LW = 2.0
 
-    FS   = 22
-    LW   = 2
-    MS   = 5
+    # Clip ω axis
+    if omega_max is None:
+        om_lin_max = linear_dispersion(np.pi, k_coupling, mx)
+        omega_max  = 1.5 * om_lin_max
+    i_om_max = np.searchsorted(omega_pos, omega_max)
+    omega_plot = omega_pos[:i_om_max]
+    spec_plot  = spectrum[:, :i_om_max]
+
+    # Convert to dB and apply dynamic range
+    S_dB = 10.0 * np.log10(spec_plot + 1e-30)
+    S_dB -= S_dB.max()
+    S_dB  = np.clip(S_dB, -dB_range, 0.0)
+
+    # Normalised wavenumber for the x-axis
+    k_norm = k_pos / np.pi     # [0, 1]
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # --- linear baseline (use first curve's omega_lin) ---
-    om_lin = curves[0]['omega_lin']
-    x_axis = kappa / np.pi if normalize_kappa else kappa
-    ax.plot(x_axis, om_lin, 'k--', linewidth=LW,
-            label=r'Linear  ($D\to\infty$)')
+    im = ax.pcolormesh(
+        k_norm, omega_plot, S_dB.T,
+        cmap='inferno', shading='auto',
+        vmin=-dB_range, vmax=0.0,
+    )
+    cbar = fig.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label('Spectral power (dB)', fontsize=FS - 4)
+    cbar.ax.tick_params(labelsize=FS - 6)
 
-    # --- PINN nonlinear curves ---
-    n_curves = len(curves)
-    palette  = plt.cm.plasma(np.linspace(0.15, 0.85, max(n_curves, 1)))
+    # Linear dispersion overlay
+    k_line   = np.linspace(0, np.pi, 300)
+    om_line  = linear_dispersion(k_line, k_coupling, mx)
+    ax.plot(k_line / np.pi, om_line, 'w--', linewidth=LW,
+            label=r'Linear  ($D \to \infty$)')
 
-    for res, color in zip(curves, palette):
-        label = rf'PINN  $\dot{{y}}_0 = {res["yt0"]:.1f}$'
-        valid = ~np.isnan(res['omega'])
-        ax.plot(x_axis[valid], res['omega'][valid],
-                color=color, linewidth=LW,
-                marker='o', markersize=MS, label=label)
-
-    # --- labels & formatting ---
-    x_label = (r'Normalized wavenumber  $\kappa / \pi$'
-               if normalize_kappa else r'Wavenumber  $\kappa$  (rad)')
-    ax.set_xlabel(x_label,                  fontsize=FS, labelpad=8)
-    ax.set_ylabel(r'Frequency  $\omega$  (rad/s)', fontsize=FS, labelpad=10)
+    ax.set_xlabel(r'Wavenumber  $k / \pi$  (–)',
+                  fontsize=FS, labelpad=8)
+    ax.set_ylabel(r'Frequency  $\omega$  (rad/s)',
+                  fontsize=FS, labelpad=10)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, omega_max)
     ax.xaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
     ax.tick_params(axis='both', labelsize=FS - 2)
-    ax.legend(fontsize=FS - 5, loc='upper left', framealpha=0.85)
+    ax.legend(fontsize=FS - 5, loc='upper left', framealpha=0.6)
 
-    if normalize_kappa:
-        ax.set_xlim(0, 1)
-    else:
-        ax.set_xlim(0, np.pi)
-
-    ax.set_ylim(bottom=0)
     plt.tight_layout(pad=1.5)
 
     if save_path is not None:
@@ -336,57 +351,96 @@ def plot_dispersion_curve(
     return fig, ax
 
 
-def plot_dispersion_with_keff(
-    kappa,
-    curves,
+def plot_dispersion_amplitude(
+    results_by_amplitude,
     k_coupling,
+    mx,
     save_path=None,
+    figsize=(7, 5),
+    omega_max=None,
 ):
     """
-    Two-panel figure: (left) ω(κ) dispersion, (right) k_eff(κ).
-    Helpful for checking the Bloch stiffness used at each wavenumber.
+    Overlay dispersion ridge extractions for several excitation amplitudes.
+
+    Parameters
+    ----------
+    results_by_amplitude : list of dicts, each with keys:
+        'k'     : (M,) wavenumber array (rad/unit cell)
+        'omega' : (M,) dominant frequency extracted per wavenumber
+        'label' : str, e.g. 'A=0.5'
+    k_coupling, mx : lattice parameters
+    save_path, figsize, omega_max : as in plot_dispersion_heatmap
+
+    Returns
+    -------
+    fig, ax
     """
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    mpl.rcParams.update({
+        'font.family':      'Times New Roman',
+        'pdf.fonttype':     42,
+        'ps.fonttype':      42,
+    })
+    FS      = 22
+    LW      = 2.5
+    palette = plt.cm.plasma(np.linspace(0.15, 0.85, len(results_by_amplitude)))
 
-    # Left: dispersion
-    ax = axes[0]
-    k_vals = curves[0]['k_eff']
-    x_axis = kappa / np.pi
+    if omega_max is None:
+        omega_max = 1.6 * linear_dispersion(np.pi, k_coupling, mx)
 
-    om_lin = curves[0]['omega_lin']
-    ax.plot(x_axis, om_lin, 'k--', lw=2, label=r'Linear')
+    fig, ax = plt.subplots(figsize=figsize)
 
-    palette = plt.cm.plasma(np.linspace(0.15, 0.85, max(len(curves), 1)))
-    for res, color in zip(curves, palette):
+    # Linear baseline
+    k_line  = np.linspace(0, np.pi, 300)
+    om_line = linear_dispersion(k_line, k_coupling, mx)
+    ax.plot(k_line / np.pi, om_line, 'k--', linewidth=LW,
+            label=r'Linear  ($D \to \infty$)')
+
+    for res, color in zip(results_by_amplitude, palette):
         valid = ~np.isnan(res['omega'])
-        ax.plot(x_axis[valid], res['omega'][valid],
-                color=color, lw=2, marker='o', ms=4,
-                label=rf"$\dot{{y}}_0={res['yt0']:.1f}$")
+        ax.plot(res['k'][valid] / np.pi, res['omega'][valid],
+                color=color, linewidth=LW,
+                marker='o', markersize=5, label=res['label'])
 
-    ax.set_xlabel(r'$\kappa / \pi$', fontsize=18)
-    ax.set_ylabel(r'$\omega$  (rad/s)', fontsize=18)
+    ax.set_xlabel(r'Wavenumber  $k / \pi$',     fontsize=FS, labelpad=8)
+    ax.set_ylabel(r'Frequency  $\omega$ (rad/s)', fontsize=FS, labelpad=10)
     ax.set_xlim(0, 1)
-    ax.set_ylim(bottom=0)
-    ax.tick_params(labelsize=16)
-    ax.legend(fontsize=13, loc='upper left')
-    ax.set_title('Dispersion curve', fontsize=16)
-
-    # Right: k_eff(κ)
-    ax2 = axes[1]
-    ax2.plot(x_axis, k_vals, 'b-', lw=2)
-    ax2.set_xlabel(r'$\kappa / \pi$', fontsize=18)
-    ax2.set_ylabel(r'$k_{\mathrm{eff}}(\kappa) = 2k_c(1-\cos\kappa)$', fontsize=16)
-    ax2.set_xlim(0, 1)
-    ax2.set_ylim(bottom=0)
-    ax2.tick_params(labelsize=16)
-    ax2.set_title('Bloch effective stiffness', fontsize=16)
-    ax2.axhline(y=2 * k_coupling, color='gray', lw=1, linestyle=':', label=r'$k = 2k_c$')
-    ax2.axhline(y=4 * k_coupling, color='gray', lw=1, linestyle='--', label=r'$k = 4k_c$')
-    ax2.legend(fontsize=13)
+    ax.set_ylim(0, omega_max)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
+    ax.tick_params(axis='both', labelsize=FS - 2)
+    ax.legend(fontsize=FS - 5, loc='upper left', framealpha=0.85)
 
     plt.tight_layout(pad=1.5)
+
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f'Saved → {save_path}')
+
     plt.show()
-    return fig, axes
+    return fig, ax
+
+
+def extract_ridge(k_pos, omega_pos, spectrum, omega_min=0.01):
+    """
+    Extract the dispersion ridge (dominant ω for each k) from the 2-D spectrum.
+
+    Useful for overlaying multiple amplitude curves on one plot.
+
+    Parameters
+    ----------
+    k_pos, omega_pos, spectrum : from dispersion_from_2dfft()
+    omega_min : ignore frequencies below this (avoids DC peak)
+
+    Returns
+    -------
+    k_pos   : same as input
+    omega_ridge : (N//2+1,) dominant ω at each k
+    """
+    i_min  = np.searchsorted(omega_pos, omega_min)
+    omega_ridge = np.full(len(k_pos), np.nan)
+    for i in range(len(k_pos)):
+        row = spectrum[i, i_min:]
+        if row.max() > 0:
+            idx = int(np.argmax(row)) + i_min
+            omega_ridge[i] = omega_pos[idx]
+    return k_pos, omega_ridge
