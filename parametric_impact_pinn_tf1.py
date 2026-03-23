@@ -96,9 +96,17 @@ class SequentialParametricImpactPINN(object):
         nIter_vector,
         hyp_ini_para_vector,
         num_time_points=1000,
+        lb_params=None,
+        ub_params=None,
     ):
         """
         Sequentially train each impact segment.
+
+        lb_params / ub_params : array-like of length 9, optional
+            Lower/upper bounds for the 9 non-time input channels:
+            [mx, my, k, c, D, y0, yt0, x0, xt0].
+            The time bounds [0, T] are always set automatically per segment.
+            If not provided, defaults are used.
         """
         # current state
         x0 = np.asarray(x0, dtype=np.float32).reshape(1, 1)
@@ -124,10 +132,12 @@ class SequentialParametricImpactPINN(object):
             t0 = np.array([[0.0]], dtype=np.float32)
             t_r = np.linspace(0.0, T, num_time_points).reshape(-1, 1).astype(np.float32)
 
-            # 10 input channels:
-            # [t, mx, my, k, c, D, y0, yt0, x0, xt0]
-            lb = np.array([0.0,  0.1, 0.1, 0.1, 0.0, 0.1, -5.0, -5.0, -5.0, -5.0], dtype=np.float32)
-            ub = np.array([T,   10.0, 10.0, 10.0, 5.0, 10.0,  5.0,  5.0,  5.0,  5.0], dtype=np.float32)
+            # 10 input channels: [t, mx, my, k, c, D, y0, yt0, x0, xt0]
+            # Time bounds are set automatically; the remaining 9 come from lb_params/ub_params.
+            _lb9 = lb_params if lb_params is not None else [ 0.1,  0.1,  0.1, 0.0,  0.1, -5.0, -5.0, -5.0, -5.0]
+            _ub9 = ub_params if ub_params is not None else [10.0, 10.0, 10.0, 5.0, 10.0,  5.0,  5.0,  5.0,  5.0]
+            lb = np.array([0.0, *_lb9], dtype=np.float32)
+            ub = np.array([T,   *_ub9], dtype=np.float32)
 
             model = ParametricImpactPINN(
                 lb=lb,
