@@ -339,6 +339,7 @@ class ParametricImpactPINN(object):
         hyp_ini_weight_loss=(1.0, 1.0, 1.0),
         hyp_ini_para=0.5,
         optimizer_LB=True,
+        lambda_min_frac=0.05,
     ):
         # -----------------------------
         # Store training data (numpy)
@@ -464,10 +465,15 @@ class ParametricImpactPINN(object):
         self.loss_fx = tf.reduce_mean(tf.square(self.fx_r_pred))
         self.loss_f = tf.reduce_mean(tf.square(self.f_impact_r_pred))
 
-        # Optional regularization: keep lambda inside [t_min, t_max]
-        t_min = tf.reduce_min(self.t_r_tf)
+        # Keep lambda inside [lambda_min, t_max].
+        # lambda_min > 0 prevents the trivial lambda=0 solution: at t=0 the
+        # IC already satisfies |x0-y0|=D (it was the previous impact point),
+        # so loss_f is exactly 0 there and the optimizer collapses to lambda=0
+        # without this lower-bound penalty.
         t_max = tf.reduce_max(self.t_r_tf)
-        self.loss_lambda_box = tf.reduce_mean(tf.square(tf.nn.relu(t_min - self.lambda_1))) + \
+        T_val = float(np.max(np.asarray(t_r, dtype=np.float32)))
+        lambda_lower = tf.constant(float(lambda_min_frac) * T_val, dtype=tf.float32)
+        self.loss_lambda_box = tf.reduce_mean(tf.square(tf.nn.relu(lambda_lower - self.lambda_1))) + \
                                tf.reduce_mean(tf.square(tf.nn.relu(self.lambda_1 - t_max)))
 
         self.loss = self.beta_icx * self.loss_icx + \
@@ -989,6 +995,7 @@ def train_parametric_pinn(
     hyp_ini_weight_loss=(1.0, 1.0, 10.0),
     optimizer_LB=True,
     seed=42,
+    lambda_min_frac=0.05,
 ):
     """
     Train one ParametricImpactPINN per impact segment, all N cases at once.
@@ -1034,6 +1041,11 @@ def train_parametric_pinn(
         If True, run L-BFGS-B after Adam (requires tf.contrib).
     seed : int
         Random seed for LHS.
+    lambda_min_frac : float
+        Minimum allowed lambda as a fraction of T_max_per_segment (default 0.05).
+        Prevents the trivial lambda=0 solution: at segment start |x0-y0|=D is
+        already satisfied (previous impact IC), so without this lower bound the
+        optimizer can collapse to lambda=0 instead of finding the next impact.
 
     Returns
     -------
@@ -1094,10 +1106,26 @@ def train_parametric_pinn(
             hyp_ini_weight_loss=hyp_ini_weight_loss,
             hyp_ini_para=hyp_ini_para,
             optimizer_LB=optimizer_LB,
+            lambda_min_frac=lambda_min_frac,
         )
 
         model.train(nIter=nIter, optimizer_LB=optimizer_LB,
                     print_every=max(1, nIter // 10))
+
+        # Warn if any lambda converged suspiciously small — likely the trivial
+        # lambda=0 solution (T_max too short, or lambda_min_frac needs raising).
+        lam_vals = model.predict_lambda()  # (n_cases, 1)
+        threshold = lambda_min_frac * T_max * 2.0
+        bad = np.where(lam_vals[:, 0] < threshold)[0]
+        if len(bad) > 0:
+            warnings.warn(
+                f"Segment {seg+1}: {len(bad)} case(s) have lambda < {threshold:.4f} "
+                f"(indices {bad.tolist()}). Likely causes:\n"
+                f"  1. T_max={T_max} too short — the next impact falls outside the window.\n"
+                f"  2. lambda converged to 0 (trivial IC solution). "
+                f"Try increasing T_max_per_segment[{seg}] or lambda_min_frac."
+            )
+
         segment_models.append(model)
 
         # 3. Propagate each case through the impact to get ICs for next segment
