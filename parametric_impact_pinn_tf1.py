@@ -238,13 +238,32 @@ class SequentialParametricImpactPINN(object):
 
             # lambda_vals: (n_cases, 1) — one impact time per case
             lambda_vals = model.predict_lambda()
-            all_impact_times.append(lambda_vals[:, 0])
+
+            # --- Per-case gap scan: verify whether a real impact occurred ---
+            # At t=0 the IC already satisfies |x0-y0|=D, so the trained lambda
+            # can be a trivial lambda=0 solution.  Scan the gap function over
+            # (0, T] to confirm a genuine crossing exists; if not, treat the
+            # whole window as free flight (no impact, no velocity update).
+            t_scan_check = np.linspace(T * 0.02, T, 300).reshape(-1, 1).astype(np.float32)
+            impact_detected = np.zeros(n_cases, dtype=bool)
+            for i in range(n_cases):
+                x_sc, _, _ = model.predict_case(t_star=t_scan_check, case_idx=i)
+                y_sc = float(yt0[i, 0]) * t_scan_check + float(y0[i, 0])
+                gap_sc = np.abs(x_sc.flatten() - y_sc.flatten()) - float(D[i, 0])
+                impact_detected[i] = len(np.where(np.diff(np.sign(gap_sc)))[0]) > 0
+                if not impact_detected[i]:
+                    print(f"  Seg {j+1}, case {i}: no impact detected in [0, {T:.3f}] "
+                          f"— segment runs full T, no velocity update.")
+
+            # Effective segment durations: use lambda if impact, T if no impact
+            effective_times = np.where(impact_detected, lambda_vals[:, 0], T)
+            all_impact_times.append(effective_times)
 
             # --- Per-case post-processing ---
             for i in range(n_cases):
-                t_imp_i = float(lambda_vals[i, 0])
+                t_imp_i = float(effective_times[i])
 
-                # State at impact for case i
+                # State at end of this segment
                 x1_i, xt1_i, _ = model.predict_case(
                     t_star=np.array([[t_imp_i]], dtype=np.float32),
                     case_idx=i,
@@ -264,19 +283,24 @@ class SequentialParametricImpactPINN(object):
                 all_x[i].append(x_s);   all_xt[i].append(xt_s);  all_xtt[i].append(xtt_s)
                 all_y[i].append(y_s);   all_yt[i].append(yt_s);  all_ytt[i].append(ytt_s)
 
-                # Velocity update after impact
-                xt_plus_i, yt_plus_i = self.impact_update(
-                    np.array([[xt1_i]], dtype=np.float32),
-                    np.array([[yt1_i]], dtype=np.float32),
-                    mx[i:i+1], my[i:i+1],
-                )
-
-                # Update ICs for next segment (in-place)
-                x0[i, 0]  = float(x1_i)
-                xt0[i, 0] = float(xt_plus_i)
-                y0[i, 0]  = float(y1_i)
-                yt0[i, 0] = float(yt_plus_i)
+                # Update ICs for next segment
+                x0[i, 0] = float(x1_i)
+                y0[i, 0] = float(y1_i)
                 time_offsets[i] += t_imp_i
+
+                if impact_detected[i]:
+                    # Real impact: apply momentum-conservation velocity update
+                    xt_plus_i, yt_plus_i = self.impact_update(
+                        np.array([[xt1_i]], dtype=np.float32),
+                        np.array([[yt1_i]], dtype=np.float32),
+                        mx[i:i+1], my[i:i+1],
+                    )
+                    xt0[i, 0] = float(xt_plus_i)
+                    yt0[i, 0] = float(yt_plus_i)
+                else:
+                    # No impact: velocities are continuous across the segment boundary
+                    xt0[i, 0] = float(xt1_i)
+                    yt0[i, 0] = float(yt1_i)
 
             self.models.append(model)
             self.segment_data.append({
@@ -830,7 +854,12 @@ def find_impact_time(model, mx, my, k, c, D, y0, yt0, x0, xt0,
     Returns
     -------
     t_impact : float
-        Returns T_max with a warning if no crossing is found.
+        First crossing time, or T_max if none found.
+    impact_occurred : bool
+        True if a genuine crossing was found; False if the gap never closed
+        within the window (no impact in this segment — caller should NOT
+        apply the velocity-update rule and should use T_max as the segment
+        duration so the trajectory continues uninterrupted).
     """
     t_scan = np.linspace(1e-3, T_max, n_scan).reshape(-1, 1).astype(np.float32)
     x_scan, _, _ = model.predict(t_scan, x0=x0, xt0=xt0, y0=y0, yt0=yt0,
@@ -841,11 +870,9 @@ def find_impact_time(model, mx, my, k, c, D, y0, yt0, x0, xt0,
 
     sign_changes = np.where(np.diff(np.sign(gap)))[0]
     if len(sign_changes) == 0:
-        warnings.warn(
-            f"No impact detected within T_max={T_max}. "
-            "Consider increasing T_max or checking parameter ranges."
-        )
-        return float(T_max)
+        # No impact in this window — not an error, just free flight.
+        # Caller should advance time by T_max without a velocity update.
+        return float(T_max), False
 
     idx = sign_changes[0]
     ta = float(t_scan[idx, 0])
@@ -863,7 +890,7 @@ def find_impact_time(model, mx, my, k, c, D, y0, yt0, x0, xt0,
     except ValueError:
         t_impact = ta
 
-    return float(t_impact)
+    return float(t_impact), True
 
 
 # ---------------------------------------------------------------------------
@@ -927,15 +954,20 @@ class ParametricSequentialPredictor:
         """
         all_t, all_x, all_xt, all_y, all_yt = [], [], [], [], []
         impact_times = []
+        impact_flags = []   # True = real impact, False = free-flight segment
         time_offset = 0.0
 
         cur_x0, cur_xt0 = float(x0),  float(xt0)
         cur_y0, cur_yt0 = float(y0),  float(yt0)
 
-        for model, T_max in zip(self.models, self.T_max):
-            t_imp = find_impact_time(
+        for seg_idx, (model, T_max) in enumerate(zip(self.models, self.T_max)):
+            t_imp, impact_occurred = find_impact_time(
                 model, mx, my, k, c, D,
                 cur_y0, cur_yt0, cur_x0, cur_xt0, T_max)
+
+            if not impact_occurred:
+                print(f"  Predictor seg {seg_idx+1}: no impact in [0, {T_max:.3f}] "
+                      f"— free flight, no velocity update.")
 
             t_seg = np.linspace(0.0, t_imp, num_points).reshape(-1, 1).astype(np.float32)
             x_seg, xt_seg, _ = model.predict(
@@ -952,27 +984,34 @@ class ParametricSequentialPredictor:
             all_y.append(y_seg)
             all_yt.append(yt_seg)
             impact_times.append(t_imp)
+            impact_flags.append(impact_occurred)
             time_offset += t_imp
 
-            # State right at impact
+            # State at end of segment
             x1, xt1, _ = model.predict(
                 np.array([[t_imp]], dtype=np.float32),
                 x0=cur_x0, xt0=cur_xt0, y0=cur_y0, yt0=cur_yt0,
                 mx=mx, my=my, k=k, c=c, D=D)
 
             y1 = cur_y0 + cur_yt0 * t_imp
-            xt_plus, yt_plus = _impact_update(mx, my, self.r,
-                                               float(xt1[0, 0]), cur_yt0)
-            cur_x0, cur_xt0 = float(x1[0, 0]), xt_plus
-            cur_y0, cur_yt0 = y1, yt_plus
+            if impact_occurred:
+                xt_plus, yt_plus = _impact_update(mx, my, self.r,
+                                                   float(xt1[0, 0]), cur_yt0)
+                cur_x0, cur_xt0 = float(x1[0, 0]), xt_plus
+                cur_y0, cur_yt0 = y1, yt_plus
+            else:
+                # No impact: state is continuous, no velocity jump
+                cur_x0, cur_xt0 = float(x1[0, 0]), float(xt1[0, 0])
+                cur_y0, cur_yt0 = y1, cur_yt0
 
         return {
-            'time':         np.vstack(all_t),
-            'x':            np.vstack(all_x),
-            'xt':           np.vstack(all_xt),
-            'y':            np.vstack(all_y),
-            'yt':           np.vstack(all_yt),
-            'impact_times': np.array(impact_times),
+            'time':           np.vstack(all_t),
+            'x':              np.vstack(all_x),
+            'xt':             np.vstack(all_xt),
+            'y':              np.vstack(all_y),
+            'yt':             np.vstack(all_yt),
+            'impact_times':   np.array(impact_times),
+            'impact_occurred': np.array(impact_flags),
         }
 
 
@@ -1139,10 +1178,14 @@ def train_parametric_pinn(
             for i in range(n_cases):
                 p = {k: float(cases[k][i, 0]) for k in param_keys}
 
-                t_imp = find_impact_time(
+                t_imp, impact_occurred = find_impact_time(
                     model,
                     p['mx'], p['my'], p['k'], p['c'], p['D'],
                     p['y0'], p['yt0'], p['x0'], p['xt0'], T_max)
+
+                if not impact_occurred:
+                    print(f"  Seg {seg+1}, case {i}: no impact in [0, {T_max:.3f}] "
+                          f"— free flight for full T, no velocity update.")
 
                 x1, xt1, _ = model.predict(
                     np.array([[t_imp]], dtype=np.float32),
@@ -1150,13 +1193,18 @@ def train_parametric_pinn(
                     mx=p['mx'], my=p['my'], k=p['k'], c=p['c'], D=p['D'])
 
                 y1 = p['y0'] + p['yt0'] * t_imp
-                xt_plus, yt_plus = _impact_update(
-                    p['mx'], p['my'], r, float(xt1[0, 0]), p['yt0'])
+                new_x0[i, 0] = float(x1[0, 0])
+                new_y0[i, 0] = y1
 
-                new_x0[i, 0]  = float(x1[0, 0])
-                new_xt0[i, 0] = xt_plus
-                new_y0[i, 0]  = y1
-                new_yt0[i, 0] = yt_plus
+                if impact_occurred:
+                    xt_plus, yt_plus = _impact_update(
+                        p['mx'], p['my'], r, float(xt1[0, 0]), p['yt0'])
+                    new_xt0[i, 0] = xt_plus
+                    new_yt0[i, 0] = yt_plus
+                else:
+                    # No impact: velocities carry through unchanged
+                    new_xt0[i, 0] = float(xt1[0, 0])
+                    new_yt0[i, 0] = p['yt0']
 
             # Physical parameters stay the same; only ICs advance
             cases['x0'],  cases['xt0'] = new_x0,  new_xt0
