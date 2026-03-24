@@ -48,12 +48,14 @@ class SequentialParametricImpactPINN(object):
         hyp_ini_weight_loss=(1.0, 1.0, 10.0),
         optimizer_LB=True,
     ):
-        self.mx = float(mx)
-        self.my = float(my)
-        self.k = float(k)
-        self.c = float(c)
-        self.D = float(D)
-        self.r = float(r)
+        # Store as (n, 1) arrays so they can be broadcast to any n_cases in run().
+        # Passing a scalar produces shape (1, 1); passing an array produces (n, 1).
+        self.mx = np.asarray(mx, dtype=np.float32).reshape(-1, 1)
+        self.my = np.asarray(my, dtype=np.float32).reshape(-1, 1)
+        self.k  = np.asarray(k,  dtype=np.float32).reshape(-1, 1)
+        self.c  = np.asarray(c,  dtype=np.float32).reshape(-1, 1)
+        self.D  = np.asarray(D,  dtype=np.float32).reshape(-1, 1)
+        self.r  = float(r)
 
         self.layers = layers
         self.hyp_ini_weight_loss = hyp_ini_weight_loss
@@ -63,26 +65,30 @@ class SequentialParametricImpactPINN(object):
         self.models = []
         self.segment_data = []
 
-    def impact_update(self, xt_minus, yt_minus):
+    def impact_update(self, xt_minus, yt_minus, mx, my):
         """
         Velocity update from restitution + momentum conservation.
+
+        Closed-form solution of:
+            [M  m ][xt+]   [M   m][xt-]
+            [1  -1][yt+] = [-r  r][yt-]
+
+        Supports (n_cases, 1) array inputs for vectorised multi-case use.
+
+        Parameters
+        ----------
+        xt_minus, yt_minus : (n, 1) arrays  — pre-impact velocities
+        mx, my             : (n, 1) arrays  — masses for each case
         """
-        mx = self.mx
-        my = self.my
         r = self.r
+        xt_minus = np.asarray(xt_minus, dtype=np.float32).reshape(-1, 1)
+        yt_minus = np.asarray(yt_minus, dtype=np.float32).reshape(-1, 1)
+        mx = np.asarray(mx, dtype=np.float32).reshape(-1, 1)
+        my = np.asarray(my, dtype=np.float32).reshape(-1, 1)
 
-        A = np.array([[mx, my],
-                      [1.0, -1.0]], dtype=np.float32)
-
-        B = np.array([[mx, my],
-                      [-r,  r]], dtype=np.float32)
-
-        V_minus = np.array([[float(xt_minus)],
-                            [float(yt_minus)]], dtype=np.float32)
-
-        V_plus = np.linalg.solve(A, B @ V_minus)
-        xt_plus = V_plus[0:1, :]
-        yt_plus = V_plus[1:2, :]
+        total = mx + my
+        xt_plus = ((mx - r * my) * xt_minus + my * (1.0 + r) * yt_minus) / total
+        yt_plus = (mx * (1.0 + r) * xt_minus + (my - r * mx) * yt_minus) / total
         return xt_plus, yt_plus
 
     def run(
@@ -100,130 +106,162 @@ class SequentialParametricImpactPINN(object):
         ub_params=None,
     ):
         """
-        Sequentially train each impact segment.
+        Sequentially train each impact segment for ALL cases simultaneously.
 
+        Each segment creates ONE ParametricImpactPINN with n_cases training cases,
+        yielding n_cases learnable lambda values per segment (one per case).
+
+        Parameters
+        ----------
+        x0, xt0, y0, yt0 : array-like, shape (n_cases, 1)
+            Initial conditions for all cases.
+        n_impact          : int
+            Number of impact segments.
+        T_vector          : list/array of length n_impact
+            Upper time bound for each segment's collocation grid.
+        nIter_vector      : list/array of length n_impact
+            Adam iterations per segment.
+        hyp_ini_para_vector : list/array of length n_impact
+            Initial guess for lambda per segment.
+        num_time_points   : int
+            Collocation / output points per segment.
         lb_params / ub_params : array-like of length 9, optional
-            Lower/upper bounds for the 9 non-time input channels:
+            Bounds for the 9 non-time input channels:
             [mx, my, k, c, D, y0, yt0, x0, xt0].
-            The time bounds [0, T] are always set automatically per segment.
-            If not provided, defaults are used.
+
+        Returns
+        -------
+        dict with keys:
+            "time", "x", "xt", "xtt", "y", "yt", "ytt"
+                shape (n_cases, n_impact * (num_time_points+1), 1)
+            "impact_times"
+                shape (n_cases, n_impact)
         """
-        # current state
-        x0 = np.asarray(x0, dtype=np.float32).reshape(1, 1)
-        xt0 = np.asarray(xt0, dtype=np.float32).reshape(1, 1)
-        y0 = np.asarray(y0, dtype=np.float32).reshape(1, 1)
-        yt0 = np.asarray(yt0, dtype=np.float32).reshape(1, 1)
+        # --- Normalise ICs to (n_cases, 1) ---
+        x0  = np.asarray(x0,  dtype=np.float32).reshape(-1, 1)
+        xt0 = np.asarray(xt0, dtype=np.float32).reshape(-1, 1)
+        y0  = np.asarray(y0,  dtype=np.float32).reshape(-1, 1)
+        yt0 = np.asarray(yt0, dtype=np.float32).reshape(-1, 1)
+        n_cases = x0.shape[0]
 
-        time_offset = 0.0
+        # --- Broadcast stored physical params to (n_cases, 1) ---
+        def _bc(v):
+            a = np.asarray(v, dtype=np.float32).reshape(-1, 1)
+            if a.shape[0] == 1 and n_cases > 1:
+                a = np.repeat(a, n_cases, axis=0)
+            if a.shape[0] != n_cases:
+                raise ValueError(f"param has {a.shape[0]} rows, expected {n_cases}")
+            return a
 
-        all_t = []
-        all_x = []
-        all_xt = []
-        all_xtt = []
-        all_y = []
-        all_yt = []
-        all_ytt = []
+        mx = _bc(self.mx)
+        my = _bc(self.my)
+        k  = _bc(self.k)
+        c  = _bc(self.c)
+        D  = _bc(self.D)
+
+        # --- Per-case output storage ---
+        # Each element: list of segment arrays, later stacked to (seg_pts, 1) per case
+        all_t   = [[] for _ in range(n_cases)]
+        all_x   = [[] for _ in range(n_cases)]
+        all_xt  = [[] for _ in range(n_cases)]
+        all_xtt = [[] for _ in range(n_cases)]
+        all_y   = [[] for _ in range(n_cases)]
+        all_yt  = [[] for _ in range(n_cases)]
+        all_ytt = [[] for _ in range(n_cases)]
+
+        time_offsets     = np.zeros(n_cases, dtype=np.float32)   # accumulated time per case
+        all_impact_times = []                                      # list of (n_cases,) arrays
 
         for j in range(n_impact):
-            T = float(T_vector[j])
-            nIter = int(nIter_vector[j])
+            T            = float(T_vector[j])
+            nIter        = int(nIter_vector[j])
             hyp_ini_para = float(hyp_ini_para_vector[j])
 
-            t0 = np.array([[0.0]], dtype=np.float32)
-            t_r = np.linspace(0.0, T, num_time_points).reshape(-1, 1).astype(np.float32)
+            t0_seg = np.zeros((n_cases, 1), dtype=np.float32)
+            t_r    = np.linspace(0.0, T, num_time_points).reshape(-1, 1).astype(np.float32)
 
-            # 10 input channels: [t, mx, my, k, c, D, y0, yt0, x0, xt0]
-            # Time bounds are set automatically; the remaining 9 come from lb_params/ub_params.
             _lb9 = lb_params if lb_params is not None else [ 0.1,  0.1,  0.1, 0.0,  0.1, -5.0, -5.0, -5.0, -5.0]
             _ub9 = ub_params if ub_params is not None else [10.0, 10.0, 10.0, 5.0, 10.0,  5.0,  5.0,  5.0,  5.0]
             lb = np.array([0.0, *_lb9], dtype=np.float32)
             ub = np.array([T,   *_ub9], dtype=np.float32)
 
+            # --- One PINN for all n_cases → n_cases lambdas ---
             model = ParametricImpactPINN(
-                lb=lb,
-                ub=ub,
-                t0=t0,
-                t_r=t_r,
-                x0=x0,
-                xt0=xt0,
-                y0=y0,
-                yt0=yt0,
-                mx=np.array([[self.mx]], dtype=np.float32),
-                my=np.array([[self.my]], dtype=np.float32),
-                k=np.array([[self.k]], dtype=np.float32),
-                c=np.array([[self.c]], dtype=np.float32),
-                D=np.array([[self.D]], dtype=np.float32),
+                lb=lb, ub=ub,
+                t0=t0_seg, t_r=t_r,
+                x0=x0, xt0=xt0, y0=y0, yt0=yt0,
+                mx=mx, my=my, k=k, c=c, D=D,
                 layers=self.layers,
                 hyp_ini_weight_loss=self.hyp_ini_weight_loss,
                 hyp_ini_para=hyp_ini_para,
                 optimizer_LB=self.optimizer_LB,
             )
 
-            model.train(nIter=nIter, optimizer_LB=self.optimizer_LB, print_every=max(1, nIter // 10))
+            model.train(nIter=nIter, optimizer_LB=self.optimizer_LB,
+                        print_every=max(1, nIter // 10))
 
-            lambda_val = model.predict_lambda()
-            t_impact = float(lambda_val[0, 0])
+            # lambda_vals: (n_cases, 1) — one impact time per case
+            lambda_vals = model.predict_lambda()
+            all_impact_times.append(lambda_vals[:, 0])
 
-            # state at impact
-            x1, xt1, xtt1 = model.predict(
-                np.array([[t_impact]], dtype=np.float32),
-                x0=x0, xt0=xt0, y0=y0, yt0=yt0,
-                mx=self.mx, my=self.my, k=self.k, c=self.c, D=self.D
-            )
+            # --- Per-case post-processing ---
+            for i in range(n_cases):
+                t_imp_i = float(lambda_vals[i, 0])
 
-            y1 = yt0 * t_impact + y0
-            yt1 = yt0
+                # State at impact for case i
+                x1_i, xt1_i, _ = model.predict_case(
+                    t_star=np.array([[t_imp_i]], dtype=np.float32),
+                    case_idx=i,
+                )
 
-            # full response on this segment
-            t_seg = np.linspace(0.0, t_impact, num_time_points + 1).reshape(-1, 1).astype(np.float32)
-            x_seg, xt_seg, xtt_seg = model.predict(
-                t_seg,
-                x0=x0, xt0=xt0, y0=y0, yt0=yt0,
-                mx=self.mx, my=self.my, k=self.k, c=self.c, D=self.D
-            )
-            y_seg = yt0 * t_seg + y0
-            yt_seg = yt0 * np.ones_like(t_seg)
-            ytt_seg = np.zeros_like(t_seg)
+                y1_i  = float(yt0[i, 0]) * t_imp_i + float(y0[i, 0])
+                yt1_i = float(yt0[i, 0])
 
-            all_t.append(t_seg + time_offset)
-            all_x.append(x_seg)
-            all_xt.append(xt_seg)
-            all_xtt.append(xtt_seg)
-            all_y.append(y_seg)
-            all_yt.append(yt_seg)
-            all_ytt.append(ytt_seg)
+                # Full trajectory on this segment for case i
+                t_seg_i   = np.linspace(0.0, t_imp_i, num_time_points + 1).reshape(-1, 1).astype(np.float32)
+                x_s, xt_s, xtt_s = model.predict_case(t_star=t_seg_i, case_idx=i)
+                y_s   = float(yt0[i, 0]) * t_seg_i + float(y0[i, 0])
+                yt_s  = float(yt0[i, 0]) * np.ones_like(t_seg_i)
+                ytt_s = np.zeros_like(t_seg_i)
 
-            self.impact_times.append(t_impact)
+                all_t[i].append(t_seg_i + time_offsets[i])
+                all_x[i].append(x_s);   all_xt[i].append(xt_s);  all_xtt[i].append(xtt_s)
+                all_y[i].append(y_s);   all_yt[i].append(yt_s);  all_ytt[i].append(ytt_s)
+
+                # Velocity update after impact
+                xt_plus_i, yt_plus_i = self.impact_update(
+                    np.array([[xt1_i]], dtype=np.float32),
+                    np.array([[yt1_i]], dtype=np.float32),
+                    mx[i:i+1], my[i:i+1],
+                )
+
+                # Update ICs for next segment (in-place)
+                x0[i, 0]  = float(x1_i)
+                xt0[i, 0] = float(xt_plus_i)
+                y0[i, 0]  = float(y1_i)
+                yt0[i, 0] = float(yt_plus_i)
+                time_offsets[i] += t_imp_i
+
             self.models.append(model)
             self.segment_data.append({
-                "segment": j + 1,
-                "t_impact": t_impact,
-                "x_minus": x1,
-                "xt_minus": xt1,
-                "y_minus": y1,
-                "yt_minus": yt1,
+                "segment":     j + 1,
+                "lambda_vals": lambda_vals,           # (n_cases, 1)
             })
 
-            # impact update
-            xt_plus, yt_plus = self.impact_update(xt1, yt1)
-
-            # new initial state for next segment
-            x0 = x1
-            xt0 = xt_plus
-            y0 = y1
-            yt0 = yt_plus
-
-            time_offset += t_impact
+        # --- Stack per-case trajectories ---
+        # Each case: n_impact arrays of shape (num_time_points+1, 1) → (total_pts, 1)
+        def _stack(lists):
+            return np.stack([np.vstack(lists[i]) for i in range(n_cases)])  # (n_cases, total_pts, 1)
 
         return {
-            "time": np.vstack(all_t),
-            "x": np.vstack(all_x),
-            "xt": np.vstack(all_xt),
-            "xtt": np.vstack(all_xtt),
-            "y": np.vstack(all_y),
-            "yt": np.vstack(all_yt),
-            "ytt": np.vstack(all_ytt),
-            "impact_times": np.array(self.impact_times, dtype=np.float32).reshape(-1, 1),
+            "time":         _stack(all_t),
+            "x":            _stack(all_x),
+            "xt":           _stack(all_xt),
+            "xtt":          _stack(all_xtt),
+            "y":            _stack(all_y),
+            "yt":           _stack(all_yt),
+            "ytt":          _stack(all_ytt),
+            "impact_times": np.column_stack(all_impact_times),  # (n_cases, n_impact)
         }
 
 class ParametricImpactPINN(object):
@@ -663,6 +701,47 @@ class ParametricImpactPINN(object):
     def predict_lambda(self):
         """Return learned impact times lambda_1 for all training cases."""
         return self.sess.run(self.lambda_1)
+
+    def predict_case(self, t_star, case_idx):
+        """
+        Evaluate x, x_t, x_tt for a single training case at arbitrary times.
+
+        Uses that case's stored parameters (mx, my, k, c, D, ICs), so the
+        network sees the correct parameter context when predicting.
+
+        Parameters
+        ----------
+        t_star   : (N, 1) array — query times (relative, starting from 0)
+        case_idx : int          — index into the n_cases training batch
+
+        Returns
+        -------
+        x, xt, xtt : (N, 1) arrays
+        """
+        t_star = np.asarray(t_star, dtype=np.float32).reshape(-1, 1)
+        n = t_star.shape[0]
+        i = int(case_idx)
+
+        def _tile(val):
+            return np.full((n, 1), float(val), dtype=np.float32)
+
+        tf_dict = {
+            self.t_r_tf:  t_star,
+            self.mx_tf:   _tile(self.mx[i, 0]),
+            self.my_tf:   _tile(self.my[i, 0]),
+            self.k_tf:    _tile(self.k[i, 0]),
+            self.c_tf:    _tile(self.c[i, 0]),
+            self.D_tf:    _tile(self.D[i, 0]),
+            self.y0_tf:   _tile(self.y0[i, 0]),
+            self.yt0_tf:  _tile(self.yt0[i, 0]),
+            self.x0_tf:   _tile(self.x0[i, 0]),
+            self.xt0_tf:  _tile(self.xt0[i, 0]),
+        }
+
+        x_s   = self.sess.run(self.x_r_pred,   tf_dict)
+        xt_s  = self.sess.run(self.xt_r_pred,  tf_dict)
+        xtt_s = self.sess.run(self.xtt_r_pred, tf_dict)
+        return x_s, xt_s, xtt_s
 
 
 if __name__ == "__main__":
