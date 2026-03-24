@@ -244,13 +244,20 @@ class SequentialParametricImpactPINN(object):
             # can be a trivial lambda=0 solution.  Scan the gap function over
             # (0, T] to confirm a genuine crossing exists; if not, treat the
             # whole window as free flight (no impact, no velocity update).
-            t_scan_check = np.linspace(T * 0.02, T, 300).reshape(-1, 1).astype(np.float32)
+            # Scan from a tiny positive t (catches early genuine impacts like
+            # t*=0.1s) and use directional crossing detection to distinguish
+            # genuine impacts (gap: negative → positive) from the trivial t=0
+            # solution (gap: 0 → negative, i.e. masses just separating).
+            t_scan_check = np.linspace(T * 1e-4, T, 300).reshape(-1, 1).astype(np.float32)
             impact_detected = np.zeros(n_cases, dtype=bool)
             for i in range(n_cases):
                 x_sc, _, _ = model.predict_case(t_star=t_scan_check, case_idx=i)
                 y_sc = float(yt0[i, 0]) * t_scan_check + float(y0[i, 0])
                 gap_sc = np.abs(x_sc.flatten() - y_sc.flatten()) - float(D[i, 0])
-                impact_detected[i] = len(np.where(np.diff(np.sign(gap_sc)))[0]) > 0
+                sep = np.where(gap_sc < 0)[0]
+                if len(sep) > 0:
+                    upward = np.where(np.diff(np.sign(gap_sc[sep[0]:])) > 0)[0]
+                    impact_detected[i] = len(upward) > 0
                 if not impact_detected[i]:
                     print(f"  Seg {j+1}, case {i}: no impact detected in [0, {T:.3f}] "
                           f"— segment runs full T, no velocity update.")
@@ -363,7 +370,7 @@ class ParametricImpactPINN(object):
         hyp_ini_weight_loss=(1.0, 1.0, 1.0),
         hyp_ini_para=0.5,
         optimizer_LB=True,
-        lambda_min_frac=0.05,
+        lambda_min_frac=1e-4,
     ):
         # -----------------------------
         # Store training data (numpy)
@@ -489,11 +496,13 @@ class ParametricImpactPINN(object):
         self.loss_fx = tf.reduce_mean(tf.square(self.fx_r_pred))
         self.loss_f = tf.reduce_mean(tf.square(self.f_impact_r_pred))
 
-        # Keep lambda inside [lambda_min, t_max].
-        # lambda_min > 0 prevents the trivial lambda=0 solution: at t=0 the
-        # IC already satisfies |x0-y0|=D (it was the previous impact point),
-        # so loss_f is exactly 0 there and the optimizer collapses to lambda=0
-        # without this lower-bound penalty.
+        # Keep lambda inside (lambda_min, t_max].
+        # lambda_min is intentionally tiny (1e-4 * T): it only prevents
+        # lambda from sitting at exactly t=0 for numerical reasons.
+        # We do NOT use a large lower bound here because a genuine early
+        # impact (e.g. t*=0.1 s with T=5 s) would be incorrectly penalised.
+        # Post-training, the gap-function scan (directional crossing detection)
+        # is the ground truth for whether a real impact occurred.
         t_max = tf.reduce_max(self.t_r_tf)
         T_val = float(np.max(np.asarray(t_r, dtype=np.float32)))
         lambda_lower = tf.constant(float(lambda_min_frac) * T_val, dtype=tf.float32)
@@ -861,20 +870,34 @@ def find_impact_time(model, mx, my, k, c, D, y0, yt0, x0, xt0,
         apply the velocity-update rule and should use T_max as the segment
         duration so the trajectory continues uninterrupted).
     """
-    t_scan = np.linspace(1e-3, T_max, n_scan).reshape(-1, 1).astype(np.float32)
+    # Start scan from a tiny positive t so we skip the trivial t=0 point
+    # where the IC already satisfies |x0-y0|=D.
+    t_scan = np.linspace(1e-4 * T_max, T_max, n_scan).reshape(-1, 1).astype(np.float32)
     x_scan, _, _ = model.predict(t_scan, x0=x0, xt0=xt0, y0=y0, yt0=yt0,
                                   mx=mx, my=my, k=k, c=c, D=D)
     x_scan = x_scan.flatten()
     y_scan = float(y0) + float(yt0) * t_scan.flatten()
     gap = np.abs(x_scan - y_scan) - float(D)
 
-    sign_changes = np.where(np.diff(np.sign(gap)))[0]
-    if len(sign_changes) == 0:
-        # No impact in this window — not an error, just free flight.
-        # Caller should advance time by T_max without a velocity update.
+    # A genuine next impact is an UPWARD crossing: after the previous impact
+    # the masses separate (gap goes negative), then collide again (gap returns
+    # to 0 from below).  We look for this negative→positive transition only.
+    # This correctly handles early genuine impacts (e.g. t*=0.1 s) and rejects
+    # the trivial solution at t=0 (which would be a downward crossing 0→negative).
+    sep_indices = np.where(gap < 0)[0]
+    if len(sep_indices) == 0:
+        # Gap never went negative: masses never separated → no real impact.
         return float(T_max), False
 
-    idx = sign_changes[0]
+    first_sep = sep_indices[0]
+    gap_after_sep = gap[first_sep:]
+    # diff of sign > 0 means sign went from −1 (or 0) to +1 (upward crossing)
+    upward = np.where(np.diff(np.sign(gap_after_sep)) > 0)[0]
+    if len(upward) == 0:
+        # Separated but gap never returned to D within the window.
+        return float(T_max), False
+
+    idx = first_sep + upward[0]
     ta = float(t_scan[idx, 0])
     tb = float(t_scan[idx + 1, 0])
 
@@ -1034,7 +1057,7 @@ def train_parametric_pinn(
     hyp_ini_weight_loss=(1.0, 1.0, 10.0),
     optimizer_LB=True,
     seed=42,
-    lambda_min_frac=0.05,
+    lambda_min_frac=1e-4,
 ):
     """
     Train one ParametricImpactPINN per impact segment, all N cases at once.
@@ -1081,10 +1104,11 @@ def train_parametric_pinn(
     seed : int
         Random seed for LHS.
     lambda_min_frac : float
-        Minimum allowed lambda as a fraction of T_max_per_segment (default 0.05).
-        Prevents the trivial lambda=0 solution: at segment start |x0-y0|=D is
-        already satisfied (previous impact IC), so without this lower bound the
-        optimizer can collapse to lambda=0 instead of finding the next impact.
+        Tiny lower bound on lambda as a fraction of T_max (default 1e-4).
+        Only prevents lambda from sitting at exactly t=0 for numerical reasons.
+        Do NOT set this large: a genuine early impact (e.g. t*=0.1 s with
+        T=5 s) would be incorrectly penalised.  Impact detection relies on
+        post-training directional gap-scan (find_impact_time), not this value.
 
     Returns
     -------
@@ -1151,19 +1175,11 @@ def train_parametric_pinn(
         model.train(nIter=nIter, optimizer_LB=optimizer_LB,
                     print_every=max(1, nIter // 10))
 
-        # Warn if any lambda converged suspiciously small — likely the trivial
-        # lambda=0 solution (T_max too short, or lambda_min_frac needs raising).
-        lam_vals = model.predict_lambda()  # (n_cases, 1)
-        threshold = lambda_min_frac * T_max * 2.0
-        bad = np.where(lam_vals[:, 0] < threshold)[0]
-        if len(bad) > 0:
-            warnings.warn(
-                f"Segment {seg+1}: {len(bad)} case(s) have lambda < {threshold:.4f} "
-                f"(indices {bad.tolist()}). Likely causes:\n"
-                f"  1. T_max={T_max} too short — the next impact falls outside the window.\n"
-                f"  2. lambda converged to 0 (trivial IC solution). "
-                f"Try increasing T_max_per_segment[{seg}] or lambda_min_frac."
-            )
+        # Note: we do NOT warn on small lambda values here.  A small trained
+        # lambda can be either the trivial t=0 solution OR a genuine early
+        # impact — they are indistinguishable by value alone.  The IC
+        # propagation step below uses directional gap-scan detection
+        # (find_impact_time) as the ground truth.
 
         segment_models.append(model)
 
