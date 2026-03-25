@@ -122,63 +122,69 @@ class PIPNNs:
         self.beta_fx  = float(hyp_ini_weight_loss[1])
 
         self.layers = layers
-        self.weights, self.biases = self._init_NN(layers)
 
-        # TF matrices
-        self.M_tf = tf.constant(M, dtype=tf.float32)
-        self.K_tf = tf.constant(K, dtype=tf.float32)
-        if C is None:
-            self.C_tf = tf.constant(np.zeros_like(M), dtype=tf.float32)
-        else:
-            self.C_tf = tf.constant(C, dtype=tf.float32)
+        # Each instance owns an isolated graph — prevents node accumulation across
+        # segments that would otherwise slow down sess.run() calls progressively.
+        self.graph = tf.Graph()
+        with self.graph.as_default():
+            self.weights, self.biases = self._init_NN(layers)
 
-        # Placeholders
-        self.t_tf   = tf.compat.v1.placeholder(tf.float32, shape=[None, 1])
-        self.t0_tf  = tf.compat.v1.placeholder(tf.float32, shape=[None, 1])
-        self.x0_tf  = tf.compat.v1.placeholder(tf.float32, shape=[None, self.n_dof])
-        self.xt0_tf = tf.compat.v1.placeholder(tf.float32, shape=[None, self.n_dof])
+            # TF matrices
+            self.M_tf = tf.constant(M, dtype=tf.float32)
+            self.K_tf = tf.constant(K, dtype=tf.float32)
+            if C is None:
+                self.C_tf = tf.constant(np.zeros_like(M), dtype=tf.float32)
+            else:
+                self.C_tf = tf.constant(C, dtype=tf.float32)
 
-        # Graph
-        self.x_pred, self.xt_pred, self.xtt_pred = self._net_u(self.t_tf)
-        self.x0_pred, self.xt0_pred, _            = self._net_u(self.t0_tf)
-        self.fx_pred                               = self._net_f(self.t_tf)
+            # Placeholders
+            self.t_tf   = tf.compat.v1.placeholder(tf.float32, shape=[None, 1])
+            self.t0_tf  = tf.compat.v1.placeholder(tf.float32, shape=[None, 1])
+            self.x0_tf  = tf.compat.v1.placeholder(tf.float32, shape=[None, self.n_dof])
+            self.xt0_tf = tf.compat.v1.placeholder(tf.float32, shape=[None, self.n_dof])
 
-        # Losses
-        self.loss_icx = (
-            tf.reduce_mean(tf.square(self.x0_pred  - self.x0_tf)) +
-            tf.reduce_mean(tf.square(self.xt0_pred - self.xt0_tf))
-        )
-        self.loss_fx = tf.reduce_mean(tf.square(self.fx_pred))
-        self.loss    = self.beta_icx * self.loss_icx + self.beta_fx * self.loss_fx
+            # Graph
+            self.x_pred, self.xt_pred, self.xtt_pred = self._net_u(self.t_tf)
+            self.x0_pred, self.xt0_pred, _            = self._net_u(self.t0_tf)
+            self.fx_pred                               = self._net_f(self.t_tf)
 
-        # Optimisers
-        self.optimizer_Adam  = tf.compat.v1.train.AdamOptimizer()
-        self.train_op_Adam   = self.optimizer_Adam.minimize(self.loss)
-        if optimizer_LB:
-            self.optimizer_LB = tf.contrib.opt.ScipyOptimizerInterface(
-                self.loss,
-                method='L-BFGS-B',
-                options={
-                    'maxiter': 50000,
-                    'maxfun':  50000,
-                    'maxcor':  50,
-                    'maxls':   50,
-                    'ftol':    1.0 * np.finfo(float).eps,
-                },
+            # Losses
+            self.loss_icx = (
+                tf.reduce_mean(tf.square(self.x0_pred  - self.x0_tf)) +
+                tf.reduce_mean(tf.square(self.xt0_pred - self.xt0_tf))
             )
+            self.loss_fx = tf.reduce_mean(tf.square(self.fx_pred))
+            self.loss    = self.beta_icx * self.loss_icx + self.beta_fx * self.loss_fx
 
-        # Logs
-        self.loss_log     = []
-        self.loss_icx_log = []
-        self.loss_fx_log  = []
+            # Optimisers
+            self.optimizer_Adam  = tf.compat.v1.train.AdamOptimizer()
+            self.train_op_Adam   = self.optimizer_Adam.minimize(self.loss)
+            if optimizer_LB:
+                self.optimizer_LB = tf.contrib.opt.ScipyOptimizerInterface(
+                    self.loss,
+                    method='L-BFGS-B',
+                    options={
+                        'maxiter': 50000,
+                        'maxfun':  50000,
+                        'maxcor':  50,
+                        'maxls':   50,
+                        'ftol':    1.0 * np.finfo(float).eps,
+                    },
+                )
 
-        self.sess = tf.compat.v1.Session(
-            config=tf.compat.v1.ConfigProto(
-                allow_soft_placement=True,
-                log_device_placement=False,
+            # Logs
+            self.loss_log     = []
+            self.loss_icx_log = []
+            self.loss_fx_log  = []
+
+            self.sess = tf.compat.v1.Session(
+                graph=self.graph,
+                config=tf.compat.v1.ConfigProto(
+                    allow_soft_placement=True,
+                    log_device_placement=False,
+                )
             )
-        )
-        self.sess.run(tf.compat.v1.global_variables_initializer())
+            self.sess.run(tf.compat.v1.global_variables_initializer())
 
     # ------------------------------------------------------------------
     # Network
