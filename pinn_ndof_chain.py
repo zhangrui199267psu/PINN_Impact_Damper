@@ -1,6 +1,6 @@
 """
-x.py
-----
+pinn_ndof_chain.py
+------------------
 Two-phase PINN for an n-DOF chain where EVERY DOF has its own internal
 impact damper (one impactor per DOF).
 
