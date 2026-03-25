@@ -34,6 +34,9 @@ Author: Rui Zhang
 
 import numpy as np
 import scipy.io as sio
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks
 
@@ -153,12 +156,154 @@ def resample_to_uniform(t_raw, X_raw, omega_max_lin, n_harmonic=4, pts_per_cycle
 # Spectral analysis helpers
 # ---------------------------------------------------------------------------
 
+def dispersion_from_2dfft(t, x_nt, skip_transient=0.25):
+    """
+    Extract the frequency–wavenumber spectrum via 2-D FFT.
+
+    Parameters
+    ----------
+    t             : (T,) uniform time array
+    x_nt          : (N, T) spatiotemporal displacement  (N = n_dof, T = time steps)
+    skip_transient: fraction of T to discard at the start (removes startup transient)
+
+    Returns
+    -------
+    k_pos    : (N//2+1,) positive wavenumbers  [0, π]  rad/unit-cell
+    omega_pos: (T//2+1,) positive angular frequencies  rad/s
+    spectrum : (N//2+1, T//2+1)  one-sided power spectrum  |FFT_2D|²
+    """
+    N, T = x_nt.shape
+    dt   = float(t[1] - t[0])
+
+    i0   = int(skip_transient * T)
+    data = x_nt[:, i0:]
+    T2   = data.shape[1]
+
+    F    = np.fft.fft2(data)
+
+    k_all = 2.0 * np.pi * np.fft.fftfreq(N)
+    k_pos = np.abs(k_all[:N // 2 + 1])
+
+    om_all = 2.0 * np.pi * np.fft.fftfreq(T2, d=dt)
+    om_pos = om_all[:T2 // 2 + 1]
+
+    spectrum = np.abs(F) ** 2
+    spectrum = spectrum[:N // 2 + 1, :T2 // 2 + 1]
+
+    return k_pos, om_pos, spectrum
+
+
+def linear_dispersion(k_wavenumber, k_coupling, mx):
+    """
+    Acoustic branch of a monoatomic ring chain (no impactor, no damping):
+
+        ω_lin(k) = 2 · √(K/M) · |sin(k/2)|
+    """
+    k = np.asarray(k_wavenumber, dtype=float)
+    return 2.0 * np.sqrt(k_coupling / mx) * np.abs(np.sin(k / 2.0))
+
+
+def extract_ridge(k_pos, omega_pos, spectrum, omega_min=0.01):
+    """
+    Extract the dominant ω for each k from the 2-D spectrum (full-range ridge).
+
+    Parameters
+    ----------
+    k_pos, omega_pos, spectrum : from dispersion_from_2dfft()
+    omega_min : ignore frequencies below this (avoids DC peak)
+
+    Returns
+    -------
+    k_pos       : same as input
+    omega_ridge : (N//2+1,) dominant ω at each k  (NaN if no peak)
+    """
+    i_min = np.searchsorted(omega_pos, omega_min)
+    omega_ridge = np.full(len(k_pos), np.nan)
+    for i in range(len(k_pos)):
+        row = spectrum[i, i_min:]
+        if row.max() > 0:
+            omega_ridge[i] = omega_pos[i_min + int(np.argmax(row))]
+    return k_pos, omega_ridge
+
+
+def plot_dispersion_heatmap(
+    k_pos, omega_pos, spectrum,
+    k_coupling, mx,
+    dB_range=40.0,
+    save_path=None,
+    figsize=(7, 5),
+    omega_max=None,
+):
+    """
+    Plot |FFT_2D(x_n(t))|² as a (k, ω) heatmap with the linear dispersion overlay.
+
+    Parameters
+    ----------
+    k_pos, omega_pos, spectrum : from dispersion_from_2dfft()
+    k_coupling, mx : lattice parameters
+    dB_range       : dynamic range to display in dB (default 40 dB)
+    save_path      : optional file path
+    figsize        : (w, h) inches
+    omega_max      : clip ω axis (None = 1.5 × linear max)
+
+    Returns
+    -------
+    fig, ax
+    """
+    mpl.rcParams.update({
+        'font.family':      'Times New Roman',
+        'mathtext.fontset': 'custom',
+        'mathtext.rm':      'Times New Roman',
+        'mathtext.it':      'Times New Roman:italic',
+        'mathtext.bf':      'Times New Roman:bold',
+        'pdf.fonttype':     42,
+        'ps.fonttype':      42,
+    })
+    FS = 20
+    LW = 2.0
+
+    if omega_max is None:
+        omega_max = 1.5 * linear_dispersion(np.pi, k_coupling, mx)
+    i_om   = np.searchsorted(omega_pos, omega_max)
+    om_plt = omega_pos[:i_om]
+    sp_plt = spectrum[:, :i_om]
+
+    S_dB = 10.0 * np.log10(sp_plt + 1e-30)
+    S_dB -= S_dB.max()
+    S_dB  = np.clip(S_dB, -dB_range, 0.0)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.pcolormesh(k_pos / np.pi, om_plt, S_dB.T,
+                       cmap='inferno', shading='auto',
+                       vmin=-dB_range, vmax=0.0)
+    cbar = fig.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label('Spectral power (dB)', fontsize=FS - 4)
+    cbar.ax.tick_params(labelsize=FS - 6)
+
+    k_line = np.linspace(0, np.pi, 300)
+    ax.plot(k_line / np.pi, linear_dispersion(k_line, k_coupling, mx),
+            'w--', lw=LW, label=r'Linear  ($D \to \infty$)')
+
+    ax.set_xlabel(r'Wavenumber  $k / \pi$',        fontsize=FS, labelpad=8)
+    ax.set_ylabel(r'Frequency  $\omega$  (rad/s)',  fontsize=FS, labelpad=10)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, omega_max)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
+    ax.tick_params(axis='both', labelsize=FS - 2)
+    ax.legend(fontsize=FS - 5, loc='upper left', framealpha=0.6)
+    plt.tight_layout(pad=1.5)
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f'Saved → {save_path}')
+    plt.show()
+    return fig, ax
+
+
 def compute_spectrum(t_uniform, X_uniform, skip_transient=0.15):
     """
     Compute the 2-D power spectrum S(k, ω) via 2-D FFT.
-
-    Wraps dispersion_curve.dispersion_from_2dfft() so the same
-    function is used in both approaches.
 
     Parameters
     ----------
@@ -172,7 +317,6 @@ def compute_spectrum(t_uniform, X_uniform, skip_transient=0.15):
     omega_pos: (P//2+1,) positive angular frequencies  rad/s
     spectrum : (n_dof//2+1, P//2+1)  one-sided power spectrum
     """
-    from dispersion_curve import dispersion_from_2dfft
     return dispersion_from_2dfft(t_uniform, X_uniform, skip_transient=skip_transient)
 
 
