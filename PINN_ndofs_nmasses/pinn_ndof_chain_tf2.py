@@ -32,10 +32,11 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'   # CPU: -1 | GPU0: 0
 np.random.seed(1234)
 tf.random.set_seed(1234)
 
-# Adam: prefer the legacy (v1-compatible) path when available (TF ≥ 2.11)
+# Adam: legacy path was removed in Keras 3 (TF ≥ 2.16); catch both
+# AttributeError (path absent) and ImportError (path exists but raises).
 try:
     _AdamClass = tf.keras.optimizers.legacy.Adam
-except AttributeError:
+except (AttributeError, ImportError):
     _AdamClass = tf.keras.optimizers.Adam
 
 
