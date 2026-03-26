@@ -32,12 +32,20 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'   # CPU: -1 | GPU0: 0
 np.random.seed(1234)
 tf.random.set_seed(1234)
 
-# Adam: legacy path was removed in Keras 3 (TF ≥ 2.16); catch both
-# AttributeError (path absent) and ImportError (path exists but raises).
-try:
-    _AdamClass = tf.keras.optimizers.legacy.Adam
-except (AttributeError, ImportError):
-    _AdamClass = tf.keras.optimizers.Adam
+# Keras 3 (TF ≥ 2.16) keeps legacy.Adam as a stub that raises ImportError
+# on *instantiation*, not on attribute access — so a module-level try/except
+# on the class reference alone is not sufficient.  Probe by instantiating.
+def _make_adam(lr=1e-3):
+    """Return a working Adam optimiser regardless of Keras version."""
+    for factory in [
+        lambda: tf.keras.optimizers.Adam(learning_rate=lr),
+        lambda: tf.keras.optimizers.legacy.Adam(learning_rate=lr),
+    ]:
+        try:
+            return factory()
+        except (AttributeError, ImportError):
+            pass
+    raise RuntimeError("No compatible tf.keras Adam optimiser found.")
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +136,7 @@ class PIPNNs:
         self.trainable_vars = self.weights + self.biases
 
         # ── optimiser ─────────────────────────────────────────────────────
-        self.adam = _AdamClass(learning_rate=1e-3)
+        self.adam = _make_adam(lr=1e-3)
         self._use_lbfgs = optimizer_LB
 
         # ── logs ──────────────────────────────────────────────────────────
