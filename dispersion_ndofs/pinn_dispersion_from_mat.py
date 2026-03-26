@@ -273,7 +273,7 @@ def plot_dispersion_heatmap(
     S_dB  = np.clip(S_dB, -dB_range, 0.0)
 
     fig, ax = plt.subplots(figsize=figsize)
-    im = ax.pcolormesh(k_pos / np.pi, om_plt, S_dB.T,
+    im = ax.pcolormesh(k_pos, om_plt, S_dB.T,
                        cmap='inferno', shading='auto',
                        vmin=-dB_range, vmax=0.0)
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
@@ -281,13 +281,15 @@ def plot_dispersion_heatmap(
     cbar.ax.tick_params(labelsize=FS - 6)
 
     k_line = np.linspace(0, np.pi, 300)
-    ax.plot(k_line / np.pi, linear_dispersion(k_line, k_coupling, mx),
+    ax.plot(k_line, linear_dispersion(k_line, k_coupling, mx),
             'w--', lw=LW, label=r'Linear  ($D \to \infty$)')
 
-    ax.set_xlabel(r'Wavenumber  $k / \pi$',        fontsize=FS, labelpad=8)
-    ax.set_ylabel(r'Frequency  $\omega$  (rad/s)',  fontsize=FS, labelpad=10)
-    ax.set_xlim(0, 1)
+    ax.set_xlabel(r'Wavenumber  $k$  (rad/unit-cell)', fontsize=FS, labelpad=8)
+    ax.set_ylabel(r'Frequency  $\omega$  (rad/s)',      fontsize=FS, labelpad=10)
+    ax.set_xlim(0, np.pi)
     ax.set_ylim(0, omega_max)
+    ax.xaxis.set_ticks([0, np.pi/4, np.pi/2, 3*np.pi/4, np.pi])
+    ax.xaxis.set_ticklabels(['0', r'$\pi/4$', r'$\pi/2$', r'$3\pi/4$', r'$\pi$'])
     ax.xaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune='both'))
     ax.tick_params(axis='both', labelsize=FS - 2)
