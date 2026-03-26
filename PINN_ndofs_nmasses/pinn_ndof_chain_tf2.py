@@ -175,26 +175,23 @@ class PIPNNs:
         """
         t  →  (x, x_t, x_tt)   each [N, n_dof]
 
-        Uses nested persistent GradientTapes, mirroring the TF1 pattern:
-            x_t[:, i]  = d(x[:, i]) / d(t)   for each DOF i
-            x_tt[:, i] = d(x_t[:, i]) / d(t)
+        Uses batch_jacobian instead of per-DOF gradient loops.
+
+        batch_jacobian(f, x) where f:[N,m] and x:[N,1] returns [N,m,1].
+        Squeezing axis=-1 gives [N,m] — exactly the per-sample, per-DOF
+        derivative we need, and fully compatible with @tf.function / AutoGraph.
+
+        The per-DOF loop pattern (tape.gradient in a list comprehension) breaks
+        inside @tf.function because AutoGraph mis-handles the tape context
+        boundary, returning None gradients that cannot be concatenated.
         """
-        with tf.GradientTape(persistent=True) as tape2:
+        with tf.GradientTape() as tape2:
             tape2.watch(t)
-            with tf.GradientTape(persistent=True) as tape1:
+            with tf.GradientTape() as tape1:
                 tape1.watch(t)
-                x = self._neural_net(t)          # [N, n_dof]
-            # slice i:i+1 keeps the tensor 2-D ([N,1]) so gradient output
-            # shape matches t ([N,1]) — identical to tf.gradients() in TF1
-            x_t = tf.concat(
-                [tape1.gradient(x[:, i:i+1], t) for i in range(self.n_dof)],
-                axis=1,
-            )   # [N, n_dof]
-        x_tt = tf.concat(
-            [tape2.gradient(x_t[:, i:i+1], t) for i in range(self.n_dof)],
-            axis=1,
-        )   # [N, n_dof]
-        del tape1, tape2
+                x = self._neural_net(t)                              # [N, n_dof]
+            x_t  = tf.squeeze(tape1.batch_jacobian(x, t),  axis=-1) # [N, n_dof]
+        x_tt = tf.squeeze(tape2.batch_jacobian(x_t, t), axis=-1)    # [N, n_dof]
         return x, x_t, x_tt
 
     def _net_f(self, t):
