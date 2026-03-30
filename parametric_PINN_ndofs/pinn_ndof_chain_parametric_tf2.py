@@ -426,6 +426,28 @@ class ParametricPIPNNs:
         x, x_t, x_tt = self._net_u(t_tf, p_j)
         return x.numpy(), x_t.numpy(), x_tt.numpy()
 
+    def predict_with_params(self, t_vals, params_row):
+        """
+        Predict x, ẋ, ẍ for an explicit parameter row (not tied to case_idx).
+
+        Parameters
+        ----------
+        t_vals    : (N,) or (N,1) — times in [0, T_seg]
+        params_row: array-like length 5 — [mx, my, k, phi1, phi2]
+
+        Returns
+        -------
+        x, x_t, x_tt : each (N, n_dof) numpy
+        """
+        t_arr = np.asarray(t_vals, dtype=np.float32).reshape(-1, 1)
+        p_row = np.asarray(params_row, dtype=np.float32).reshape(1, self.N_PARAMS)
+
+        N = t_arr.shape[0]
+        t_tf = tf.constant(t_arr)
+        p_tf = tf.repeat(tf.constant(p_row), repeats=N, axis=0)
+        x, x_t, x_tt = self._net_u(t_tf, p_tf)
+        return x.numpy(), x_t.numpy(), x_tt.numpy()
+
     def predict_all_cases(self, t_vals):
         """
         Predict for all n_cases at the same time points.
@@ -461,7 +483,7 @@ def find_impact_times_parametric(model, case_idx, n_scan=500, tol=1e-8):
     yt0   = model.yt0_cases[case_idx].astype(np.float64)
     D     = model.D
 
-    t_scan = np.linspace(1e-4 * T_max, T_max, n_scan, dtype=np.float32)
+    t_scan = np.linspace(0.0, T_max, n_scan, dtype=np.float32)
     x_scan, _, _ = model.predict(t_scan, case_idx)
     t_flat = t_scan.astype(np.float64)
 
@@ -497,6 +519,80 @@ def find_impact_times_parametric(model, case_idx, n_scan=500, tol=1e-8):
             t_imp = ta
 
         print(f'  Case {case_idx}, DOF {i+1}: impact at t = {t_imp:.6f}')
+        t_impacts[i] = t_imp
+        hit[i]       = True
+
+    return t_impacts, hit
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — impact-time root-finding (explicit parameter row)
+# ---------------------------------------------------------------------------
+
+def find_impact_times_for_params(model, params_row, y0_row, yt0_row,
+                                 n_scan=500, tol=1e-8):
+    """
+    Find first impact times for an explicit parameter row on one segment model.
+
+    This variant is independent of model.params_cases/case_idx, so it can be
+    used for direct new-parameter rollout with a trained model pool.
+
+    Parameters
+    ----------
+    model      : ParametricPIPNNs
+    params_row : array-like, shape (5,)  [mx, my, k, phi1, phi2]
+    y0_row     : array-like, shape (n_dof,)
+    yt0_row    : array-like, shape (n_dof,)
+    n_scan     : int
+    tol        : float
+
+    Returns
+    -------
+    t_impacts : (n_dof,) float
+    hit       : (n_dof,) bool
+    """
+    n     = model.n_dof
+    T_max = model.T_seg
+    y0    = np.asarray(y0_row, dtype=np.float64).flatten()
+    yt0   = np.asarray(yt0_row, dtype=np.float64).flatten()
+    D     = float(model.D)
+
+    t_scan = np.linspace(0.0, T_max, n_scan, dtype=np.float32)
+    x_scan, _, _ = model.predict_with_params(t_scan, params_row)
+    t_flat = t_scan.astype(np.float64)
+
+    t_impacts = np.full(n, T_max)
+    hit       = np.zeros(n, dtype=bool)
+
+    for i in range(n):
+        y_scan = y0[i] + yt0[i] * t_flat
+        gap    = np.abs(x_scan[:, i] - y_scan) - D
+
+        neg_idx = np.where(gap < 0)[0]
+        if not len(neg_idx):
+            continue
+
+        gap_tail = gap[neg_idx[0]:]
+        up_cross = np.where(np.diff(np.sign(gap_tail)) > 0)[0]
+        if not len(up_cross):
+            continue
+
+        bracket_i = neg_idx[0] + up_cross[0]
+        ta = float(t_flat[bracket_i])
+        tb = float(t_flat[bracket_i + 1])
+
+        def _gap(t_val, _i=i, _y0=y0[i], _yt0=yt0[i]):
+            xv, _, _ = model.predict_with_params(
+                np.array([t_val], dtype=np.float32),
+                params_row,
+            )
+            return abs(float(xv[0, _i]) - (_y0 + _yt0 * t_val)) - D
+
+        try:
+            t_imp = brentq(_gap, ta, tb, xtol=tol)
+        except ValueError:
+            t_imp = ta
+
         t_impacts[i] = t_imp
         hit[i]       = True
 
@@ -553,6 +649,134 @@ def propagate_ics_parametric(model, case_idx, t_impact, first_dof, r,
     yt0_next[first_dof] = yt_p
 
     return x0_next, xt0_next, y0_next, yt0_next
+
+
+def propagate_ics_for_params(mx, my, t_impact, first_dof, r,
+                             x0_cur, xt0_cur, y0_cur, yt0_cur):
+    """
+    Compute post-impact ICs for an explicit parameter row.
+    """
+    t  = float(t_impact)
+    mx = float(mx)
+    my = float(my)
+
+    x0_next  = np.asarray(x0_cur, dtype=np.float32).copy()
+    xt0_next = np.asarray(xt0_cur, dtype=np.float32).copy()
+    y0_next  = np.asarray(y0_cur, dtype=np.float32) + np.asarray(yt0_cur, dtype=np.float32) * t
+    yt0_next = np.asarray(yt0_cur, dtype=np.float32).copy()
+
+    xt_p, yt_p = impact_velocity_update(
+        mx, my, r,
+        xt0_next[first_dof],
+        yt0_next[first_dof],
+    )
+    xt0_next[first_dof] = xt_p
+    yt0_next[first_dof] = yt_p
+
+    return x0_next, xt0_next, y0_next, yt0_next
+
+
+def rollout_full_sequence_with_model_pool(
+    model_pool,
+    params_row,
+    n_dof,
+    r,
+    N_col,
+    x0_init=None,
+    xt0_init=None,
+    y0_init=None,
+    yt0_init=None,
+):
+    """
+    Full-sequence rollout over all trained segment models for a new parameter row.
+
+    Parameters
+    ----------
+    model_pool : list[ParametricPIPNNs]
+        One trained model per segment, e.g. `all_models` from the notebook.
+    params_row : array-like, shape (5,)
+        [mx, my, k, phi1, phi2].
+    n_dof      : int
+    r          : float
+    N_col      : int
+    x0_init, xt0_init, y0_init, yt0_init : optional (n_dof,) arrays
+
+    Returns
+    -------
+    result : dict
+        {
+          't_total': (N_total,),
+          'x_total': (N_total, n_dof),
+          'y_total': (N_total, n_dof),
+          'impact_times_by_segment': list[(n_dof,)],
+          'first_impact_time_by_segment': (n_segments,),
+        }
+    """
+    if len(model_pool) == 0:
+        raise ValueError('model_pool cannot be empty.')
+
+    params_row = np.asarray(params_row, dtype=np.float32).flatten()
+    if params_row.size != 5:
+        raise ValueError('params_row must have length 5: [mx, my, k, phi1, phi2].')
+
+    mx, my = float(params_row[0]), float(params_row[1])
+
+    x0 = np.zeros(n_dof, dtype=np.float32) if x0_init is None else np.asarray(x0_init, dtype=np.float32).copy()
+    xt0 = np.zeros(n_dof, dtype=np.float32) if xt0_init is None else np.asarray(xt0_init, dtype=np.float32).copy()
+    y0 = np.zeros(n_dof, dtype=np.float32) if y0_init is None else np.asarray(y0_init, dtype=np.float32).copy()
+    yt0 = np.zeros(n_dof, dtype=np.float32) if yt0_init is None else np.asarray(yt0_init, dtype=np.float32).copy()
+
+    t_cumulative = 0.0
+    all_t, all_x, all_y = [], [], []
+    all_t_imp_by_seg = []
+    first_imp_by_seg = []
+
+    for seg_model in model_pool:
+        # keep segment model ICs in sync with current rolling state
+        seg_model.y0_cases[0, :] = y0
+        seg_model.yt0_cases[0, :] = yt0
+
+        t_imps, hit = find_impact_times_for_params(seg_model, params_row, y0, yt0)
+        first_dof = int(np.argmin(t_imps))
+        t_imp = float(t_imps[first_dof])
+
+        t_seg = np.linspace(0.0, t_imp, N_col + 1, dtype=np.float32)
+        x_seg, _, _ = seg_model.predict_with_params(t_seg, params_row)
+        y_seg = y0[None, :] + t_seg[:, None] * yt0[None, :]
+
+        all_t.append(t_seg + t_cumulative)
+        all_x.append(x_seg)
+        all_y.append(y_seg)
+        all_t_imp_by_seg.append(t_imps.copy())
+        first_imp_by_seg.append(t_imp)
+
+        x_end, xt_end, _ = seg_model.predict_with_params(
+            np.array([t_imp], dtype=np.float32),
+            params_row,
+        )
+        if hit.any():
+            x0, xt0, y0, yt0 = propagate_ics_for_params(
+                mx, my, t_imp, first_dof, r,
+                x_end[0], xt_end[0], y0 + yt0 * t_imp, yt0,
+            )
+        else:
+            x0 = x_end[0].astype(np.float32)
+            xt0 = xt_end[0].astype(np.float32)
+            y0 = (y0 + yt0 * t_imp).astype(np.float32)
+
+        t_cumulative += t_imp
+
+    t_total = np.concatenate(all_t) if all_t else np.zeros(0, dtype=np.float32)
+    x_total = np.vstack(all_x) if all_x else np.zeros((0, n_dof), dtype=np.float32)
+    y_total = np.vstack(all_y) if all_y else np.zeros((0, n_dof), dtype=np.float32)
+
+    return {
+        't_total': t_total,
+        'x_total': x_total,
+        'y_total': y_total,
+        'impact_times_by_segment': all_t_imp_by_seg,
+        'first_impact_time_by_segment': np.asarray(first_imp_by_seg, dtype=np.float64),
+    }
 
 
 # ---------------------------------------------------------------------------
