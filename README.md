@@ -81,3 +81,12 @@ When validating, check the following:
 ## Next step (Goal 2 preview)
 
 You asked for a future `parameter_PINN/` folder with new `.py` + `.ipynb` for a parametric PINN (first trial: varying excitation frequencies). This README is prepared for Goal 1 now; Goal 2 can be added in a next change.
+
+
+## New notebook: plot multiple dispersion curves together
+
+A new notebook is provided for comparing multiple simulation outputs in one figure:
+
+- `Dispersion/plot_dispersion_together.ipynb`
+
+Use it to load `Result/pinn_data.mat` and any new file (e.g. `Result/new_data.mat`) and overlay ridge-based dispersion curves in a single plot.
