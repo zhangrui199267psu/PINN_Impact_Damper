@@ -74,3 +74,22 @@ python parameter_PINN/parametric_pinn_frequency.py \
 
 - The parametric script is intentionally lightweight as a first-trial scaffold so you can quickly expand the parameter dimensions (e.g., amplitude, damping, gap).
 - If your `.mat` fields differ, edit the field selection in the dispersion notebook.
+
+
+## Added plotting outputs
+
+The notebooks now include multiple plots for analysis:
+
+- `PINN/dispersion_curve_from_pinn_data.ipynb`:
+  - time-space response field,
+  - representative time traces,
+  - f-k dispersion heatmap,
+  - extracted dispersion ridge.
+- `parameter_PINN/parametric_pinn_frequency.ipynb`:
+  - peak response vs input frequency,
+  - RMS response vs input frequency,
+  - time-history heatmap across frequencies,
+  - output FFT comparison for selected frequencies.
+
+### Should you vary excitation frequency and replot?
+Yes. Sweeping input frequency is recommended and should be repeated to better reveal resonances and dispersion branches.
