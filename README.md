@@ -89,4 +89,4 @@ A new notebook is provided for comparing multiple simulation outputs in one figu
 
 - `Dispersion/plot_dispersion_together.ipynb`
 
-Use it to load `Result/pinn_data.mat` and any new file (e.g. `Result/new_data.mat`) and automatically detect passbands from DOS, extract top 3 bands, and plot all Band 1/2/3 curves from all MAT files together in one combined plot.
+Use it to load `Result/pinn_data.mat` and any new file (e.g. `Result/new_data.mat`) and automatically detect passbands from DOS, extract top 3 bands, and plot all Band 1/2/3 curves from all MAT files together in one combined plot. If a file has fewer detected passbands, set `force_three_bands = True` in the notebook settings to force exactly 3 plotted bands.
