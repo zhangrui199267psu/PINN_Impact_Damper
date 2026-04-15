@@ -89,4 +89,4 @@ A new notebook is provided for comparing multiple simulation outputs in one figu
 
 - `Dispersion/plot_dispersion_together.ipynb`
 
-Use it to load `Result/pinn_data.mat` and any new file (e.g. `Result/new_data.mat`) and overlay ridge-based dispersion curves in a single plot.
+Use it to load `Result/pinn_data.mat` and any new file (e.g. `Result/new_data.mat`) and automatically detect passbands from DOS, extract top 3 bands, and plot Band 1/2/3 overlays for each MAT file.
