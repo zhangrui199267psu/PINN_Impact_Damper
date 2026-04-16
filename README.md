@@ -104,3 +104,12 @@ A new folder `parametric_PINN/` is added for force-parametric runs with **consta
 Outputs are saved to `Result/` as:
 
 - `pinn_data_phi1_<...>_phi2_<...>.mat`
+
+
+## Continuity-based multi-ridge tracker
+
+A new file is added for branch-continuity tracking in `(k, ω)` space:
+
+- `Dispersion/continuity_multi_ridge_tracker.py`
+
+This method tracks multiple ridges with a dynamic-programming continuity objective (jump penalty), which is more robust than purely DOS-window-based band splitting when branches are noisy or close.
