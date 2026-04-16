@@ -90,3 +90,17 @@ A new notebook is provided for comparing multiple simulation outputs in one figu
 - `Dispersion/plot_dispersion_together.ipynb`
 
 Use it to load `Result/pinn_data.mat` and any new file (e.g. `Result/new_data.mat`) and automatically detect passbands from DOS, extract top 3 bands, and plot all Band 1/2/3 curves from all MAT files together in one combined plot. If a file has fewer detected passbands, set `force_three_bands = True` in the notebook settings to force exactly 3 plotted bands.
+
+
+## Parametric PINN folder (force-only sweep)
+
+A new folder `parametric_PINN/` is added for force-parametric runs with **constant structural parameters**:
+
+- `parametric_PINN/parametric_pinn_force_sweep.py`
+  - Script to run multiple cases where only `phi1` and `phi2` vary.
+- `parametric_PINN/parametric_pinn_force_sweep.ipynb`
+  - Notebook interface for the same workflow.
+
+Outputs are saved to `Result/` as:
+
+- `pinn_data_phi1_<...>_phi2_<...>.mat`
