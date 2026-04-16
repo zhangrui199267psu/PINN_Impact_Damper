@@ -116,4 +116,4 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
 
 
 - `Dispersion/plot_dispersion_together_continuity.ipynb`
-  - Calls `continuity_multi_ridge_tracker.py` and overlays continuity-tracked ridges from all MAT files in one figure.
+  - Calls `continuity_multi_ridge_tracker.py` and overlays continuity-tracked 3 ridges from all MAT files in one figure, with linear dispersion reference.
