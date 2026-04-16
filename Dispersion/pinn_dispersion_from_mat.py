@@ -184,8 +184,10 @@ def dispersion_from_2dfft(t, x_nt, skip_transient=0.25):
     k_all = 2.0 * np.pi * np.fft.fftfreq(N)
     k_pos = np.abs(k_all[:N // 2 + 1])
 
-    om_all = 2.0 * np.pi * np.fft.fftfreq(T2, d=dt)
-    om_pos = om_all[:T2 // 2 + 1]
+    # Use rfftfreq for a one-sided, nonnegative, monotonically increasing ω-grid.
+    # np.fft.fftfreq with even T2 places the Nyquist bin at negative frequency,
+    # which can leak a negative endpoint into omega_pos and corrupt band windows.
+    om_pos = 2.0 * np.pi * np.fft.rfftfreq(T2, d=dt)
 
     spectrum = np.abs(F) ** 2
     spectrum = spectrum[:N // 2 + 1, :T2 // 2 + 1]
