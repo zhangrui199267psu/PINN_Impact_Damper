@@ -129,3 +129,11 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
 
 - `Dispersion/pointwise_vs_continuity_comparison.ipynb`
   - Side-by-side comparison of pointwise ridge picking (`extract_ridge`) and continuity-based multi-ridge tracking on the same MAT files.
+
+
+## True parametric PINN (single-model interpolation)
+
+- `parametric_PINN/true_parametric_pinn.py`
+  - True parametric architecture with inputs `(t, phi1, phi2)` for one-model in-range interpolation.
+- `parametric_PINN/true_parametric_pinn.ipynb`
+  - Example workflow: train on several `(phi1, phi2)` cases and predict an unseen in-range case.
