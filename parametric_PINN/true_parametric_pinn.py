@@ -33,6 +33,12 @@ class ParametricModelConfig:
     c: float = 0.0
     seg_window: float = 1.0
 
+    # Parametric domain bounds for normalisation
+    phi1_min: float = 0.0
+    phi1_max: float = 1.0
+    phi2_min: float = 0.0
+    phi2_max: float = 1.0
+
     # Training
     layers: Tuple[int, ...] = (3, 64, 64, 20)  # input: [t, phi1, phi2]
     beta_ic: float = 1.0
@@ -49,8 +55,12 @@ class TrueParametricPINN:
 
         self.M_tf, self.K_tf, self.C_tf = self._build_system_matrices(cfg)
 
-        self.lb = tf.constant(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
-        self.ub = tf.constant(np.array([[cfg.seg_window, 1.0, 1.0]], dtype=np.float32))
+        self.lb = tf.constant(
+            np.array([[0.0, cfg.phi1_min, cfg.phi2_min]], dtype=np.float32)
+        )
+        self.ub = tf.constant(
+            np.array([[cfg.seg_window, cfg.phi1_max, cfg.phi2_max]], dtype=np.float32)
+        )
 
         self.weights, self.biases = self._init_nn(list(cfg.layers))
         self.trainable_vars = self.weights + self.biases

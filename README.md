@@ -136,4 +136,4 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
 - `parametric_PINN/true_parametric_pinn.py`
   - True parametric architecture with inputs `(t, phi1, phi2)` for one-model in-range interpolation.
 - `parametric_PINN/true_parametric_pinn.ipynb`
-  - Example workflow: train on several `(phi1, phi2)` cases and predict an unseen in-range case.
+  - Example workflow: sample `N` points in a 2D `(phi1, phi2)` domain, train once, and predict unseen in-range cases (extrapolation outside range is not guaranteed).
