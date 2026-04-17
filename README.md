@@ -117,3 +117,9 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
 
 - `Dispersion/plot_dispersion_together_continuity.ipynb`
   - Calls `continuity_multi_ridge_tracker.py` and overlays continuity-tracked 3 ridges from all MAT files in one figure, with linear dispersion reference.
+
+
+## Bloch vs PINN comparison notebook
+
+- `Dispersion/bloch_vs_pinn_comparison.ipynb`
+  - Overlays analytical Bloch curves with PINN pointwise ridge picking and continuity-tracked ridges for direct comparison.
