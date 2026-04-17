@@ -123,3 +123,9 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
 
 - `Dispersion/bloch_vs_pinn_comparison.ipynb`
   - Overlays analytical Bloch curves with PINN pointwise ridge picking and continuity-tracked ridges for direct comparison.
+
+
+## Pointwise vs continuity comparison notebook
+
+- `Dispersion/pointwise_vs_continuity_comparison.ipynb`
+  - Side-by-side comparison of pointwise ridge picking (`extract_ridge`) and continuity-based multi-ridge tracking on the same MAT files.
