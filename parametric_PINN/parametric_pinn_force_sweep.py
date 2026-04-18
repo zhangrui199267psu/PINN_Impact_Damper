@@ -59,6 +59,35 @@ class TrainingConfig:
     n_segments: int = 50
 
 
+def sample_phi_cases(
+    n_samples: int,
+    phi1_min: float = 1.0,
+    phi1_max: float = 2.0,
+    phi2_min: float = 10.0,
+    phi2_max: float = 20.0,
+    seed: int = 1234,
+):
+    """
+    Sample (phi1, phi2) parameter pairs over a 2D domain using simple LHS.
+
+    This is useful when no precomputed training trajectories exist. Typical
+    values for `n_samples` are 10, 20, or 100 depending on compute budget.
+    """
+    if n_samples <= 0:
+        raise ValueError("n_samples must be a positive integer.")
+
+    rng = np.random.default_rng(seed)
+
+    # Latin-hypercube-like stratified samples in [0, 1]^2
+    u1 = (np.arange(n_samples) + rng.random(n_samples)) / n_samples
+    u2 = (np.arange(n_samples) + rng.random(n_samples)) / n_samples
+    rng.shuffle(u2)
+
+    phi1 = phi1_min + (phi1_max - phi1_min) * u1
+    phi2 = phi2_min + (phi2_max - phi2_min) * u2
+    return list(zip(phi1.astype(float), phi2.astype(float)))
+
+
 def build_system_matrices(cfg: StructuralConfig):
     M = np.diag(cfg.m_x * np.ones(cfg.n_dof))
 
