@@ -146,7 +146,7 @@ Added a parametric workflow that **keeps original PINN ideas/settings** from `PI
 - `parametric PINN/parametric_pinn_50_impacts.py`
   - Stage 1: generates full 50-impact trajectories for sampled `(phi1, phi2)` using original `PIPNNs` + impact propagation.
   - Stage 2: trains one parametric model `(t, phi1, phi2) -> x` with Adam + optional L-BFGS.
-  - Predicts unseen in-range responses and extracts approximate impact times from threshold crossings of `x`.
+  - Predicts unseen in-range responses and extracts impact times using a phase-2 root-finding strategy (aligned with `pinn_ndof_chain_tf2.py`).
 - `parametric PINN/parametric_pinn_50_impacts.ipynb`
   - Notebook entry point for the same end-to-end pipeline.
 - `parametric PINN/README.md`

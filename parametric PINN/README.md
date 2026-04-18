@@ -15,7 +15,7 @@ A two-stage workflow:
    - Keep original defaults (`n_dof=20`, `m_x=1.0`, `m_y=0.3`, `k=1.0`, `D=1.0`, segment training with Adam + optional L-BFGS, etc.).
 2. **One parametric network for full horizon:**
    - Train one model mapping `(t, phi1, phi2) -> x(t)` over all sampled cases (aligned with original PINN output convention).
-   - For unseen in-range parameters, predict full-horizon `x(t)` directly and extract approximate impact times from threshold crossings of `x`.
+   - For unseen in-range parameters, predict full-horizon `x(t)` directly and extract impact times with a two-phase root-finding strategy aligned with `pinn_ndof_chain_tf2.py`.
 
 ## Files
 
@@ -25,7 +25,7 @@ A two-stage workflow:
     - `ParametricDataConfig`
     - `ParametricModelConfig`
     - `LegacyFullHorizonGenerator` (uses original `PIPNNs`, `find_impact_times`, `propagate_ics`)
-    - `ParametricFullHorizonPINN` (single network with Adam + L-BFGS)
+    - `ParametricFullHorizonPINN` (single network with Adam + L-BFGS, plus phase-2 impact-time root finding)
 - `parametric_pinn_50_impacts.ipynb`
   - Notebook runner for the full pipeline.
 

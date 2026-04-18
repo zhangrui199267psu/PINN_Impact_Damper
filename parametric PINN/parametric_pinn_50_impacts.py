@@ -357,23 +357,147 @@ class ParametricFullHorizonPINN:
         x = self._forward(tf.constant(t), tf.constant(p1), tf.constant(p2))
         return x.numpy()
 
-    def extract_impact_times(self, t_query: np.ndarray, phi1: float, phi2: float, D: float, max_impacts: int = 50):
-        x = self.predict_x(t_query, phi1, phi2)
-        t = np.asarray(t_query).reshape(-1)
-        gap = np.max(np.abs(x) - D, axis=1)
+    def predict_x_xt(self, t_query: np.ndarray, phi1: float, phi2: float):
+        """Return x and x_t at query times (needed for phase-2 impact updates)."""
+        t = tf.constant(np.asarray(t_query, dtype=np.float32).reshape(-1, 1))
+        p1 = tf.constant(np.full((t.shape[0], 1), float(phi1), dtype=np.float32))
+        p2 = tf.constant(np.full((t.shape[0], 1), float(phi2), dtype=np.float32))
+        with tf.GradientTape() as tape:
+            tape.watch(t)
+            x = self._forward(t, p1, p2)
+        xt = tape.batch_jacobian(x, t)
+        return x.numpy(), np.squeeze(xt.numpy(), axis=-1)
 
-        idx = np.where((gap[:-1] < 0.0) & (gap[1:] >= 0.0))[0]
-        t_imp = []
-        for i in idx:
-            ta, tb = t[i], t[i + 1]
-            ga, gb = gap[i], gap[i + 1]
-            if np.isclose(gb, ga):
-                t_imp.append(ta)
+    def _find_impact_times_window(
+        self,
+        phi1: float,
+        phi2: float,
+        t_start: float,
+        y0: np.ndarray,
+        yt0: np.ndarray,
+        D: float,
+        T_window: float = 1.0,
+        n_scan: int = 500,
+        tol: float = 1e-8,
+    ):
+        """
+        Phase 2 (aligned with pinn_ndof_chain_tf2.py):
+        Find first impact times in a fixed window [0, T_window] using
+        gap_i(tau) = |x_i(t_start + tau) - (y0_i + yt0_i * tau)| - D.
+        """
+        n = self.sim_cfg.n_dof
+        y0 = np.asarray(y0, dtype=np.float64).flatten()
+        yt0 = np.asarray(yt0, dtype=np.float64).flatten()
+        D_vec = float(D) * np.ones(n)
+
+        tau_scan = np.linspace(1e-4 * T_window, T_window, n_scan).reshape(-1, 1).astype(np.float32)
+        t_abs_scan = t_start + tau_scan
+        x_scan = self.predict_x(t_abs_scan, phi1, phi2)
+        tau_flat = tau_scan.flatten().astype(np.float64)
+
+        t_impacts = np.full(n, T_window, dtype=np.float64)
+        hit = np.zeros(n, dtype=bool)
+
+        for i in range(n):
+            y_scan = y0[i] + yt0[i] * tau_flat
+            gap = np.abs(x_scan[:, i] - y_scan) - D_vec[i]
+
+            neg_idx = np.where(gap < 0)[0]
+            if len(neg_idx) == 0:
+                continue
+
+            gap_tail = gap[neg_idx[0]:]
+            up_cross = np.where(np.diff(np.sign(gap_tail)) > 0)[0]
+            if len(up_cross) == 0:
+                continue
+
+            bracket_i = neg_idx[0] + up_cross[0]
+            ta = float(tau_flat[bracket_i])
+            tb = float(tau_flat[bracket_i + 1])
+
+            def _gap(tau):
+                xv = self.predict_x(np.array([[t_start + tau]], dtype=np.float32), phi1, phi2)[0, i]
+                yv = y0[i] + yt0[i] * tau
+                return abs(float(xv) - yv) - D_vec[i]
+
+            try:
+                t_imp = brentq(_gap, ta, tb, xtol=tol)
+            except ValueError:
+                t_imp = ta
+
+            t_impacts[i] = t_imp
+            hit[i] = True
+
+        return t_impacts, hit
+
+    def extract_impact_times(
+        self,
+        phi1: float,
+        phi2: float,
+        D: float,
+        n_segments: int = 50,
+        T_window: float = 1.0,
+        y0_init: Optional[np.ndarray] = None,
+        yt0_init: Optional[np.ndarray] = None,
+        n_scan: int = 500,
+    ):
+        """
+        Two-phase strategy aligned with pinn_ndof_chain_tf2.py:
+        - Phase 1: predict response x(t) in current 1s window.
+        - Phase 2: root-find impact times in that window, pick earliest impact,
+          update impactor states, and continue.
+
+        Returns
+        -------
+        impact_times_abs : array, shape (n_segments,)
+            Earliest impact time (absolute/global) per segment.
+        hit_dofs : array, shape (n_segments,)
+            DOF index of earliest hit per segment.
+        """
+        n = self.sim_cfg.n_dof
+        y0 = np.zeros(n) if y0_init is None else np.asarray(y0_init, dtype=float).copy()
+        yt0 = np.zeros(n) if yt0_init is None else np.asarray(yt0_init, dtype=float).copy()
+
+        A_inv_B = _impact_update_matrix(self.sim_cfg.m_x, self.sim_cfg.m_y, self.sim_cfg.r)
+
+        t_cursor = 0.0
+        impact_times_abs: List[float] = []
+        hit_dofs: List[int] = []
+
+        for _ in range(n_segments):
+            t_impacts, hit = self._find_impact_times_window(
+                phi1=phi1,
+                phi2=phi2,
+                t_start=t_cursor,
+                y0=y0,
+                yt0=yt0,
+                D=D,
+                T_window=T_window,
+                n_scan=n_scan,
+            )
+
+            if np.any(hit):
+                tau = float(np.min(t_impacts))
+                hit_dof = int(np.argmin(t_impacts))
             else:
-                t_imp.append(ta - ga * (tb - ta) / (gb - ga))
-            if len(t_imp) >= max_impacts:
-                break
-        return np.asarray(t_imp)
+                tau = float(T_window)
+                hit_dof = 0
+
+            t_hit_abs = t_cursor + tau
+            impact_times_abs.append(t_hit_abs)
+            hit_dofs.append(hit_dof)
+
+            # Phase-2 update of impactor states (same strategy as legacy code)
+            x_hit, xt_hit = self.predict_x_xt(np.array([[t_hit_abs]], dtype=np.float32), phi1, phi2)
+            y0 = y0 + yt0 * tau
+            xt_m = float(xt_hit[0, hit_dof])
+            yt_m = float(yt0[hit_dof])
+            v_post = A_inv_B @ np.array([[xt_m], [yt_m]])
+            yt0[hit_dof] = float(v_post[1, 0])
+
+            t_cursor = t_hit_abs
+
+        return np.asarray(impact_times_abs), np.asarray(hit_dofs, dtype=int)
 
 
 # -----------------------------------------------------------------------------
@@ -450,8 +574,11 @@ if __name__ == "__main__":
     t_eval = np.linspace(0.0, np.max(dataset["t_local"]), 20000)
 
     x_pred = model.predict_x(t_eval, phi1_test, phi2_test)
-    t_imp = model.extract_impact_times(t_eval, phi1_test, phi2_test, D=sim_cfg.D, max_impacts=50)
+    t_imp, hit_dofs = model.extract_impact_times(
+        phi1_test, phi2_test, D=sim_cfg.D, n_segments=50, T_window=1.0
+    )
 
     print("x_pred shape:", x_pred.shape)
     print("detected impacts:", len(t_imp))
     print("first 10 impacts:", t_imp[:10])
+    print("first 10 hit dofs:", hit_dofs[:10] + 1)
