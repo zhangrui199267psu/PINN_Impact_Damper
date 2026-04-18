@@ -141,13 +141,13 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
 
 ## New folder: `parametric PINN/` (single-model 50-impact learning)
 
-Added a new implementation for your requested parametric setup:
+Added a parametric workflow that **keeps original PINN ideas/settings** from `PINN/pinn_ndof_chain_sim_tf2.ipynb` and `PINN/pinn_ndof_chain_tf2.py` (including Adam + L-BFGS in legacy segment training), while enabling one-model inference for unseen parameters.
 
 - `parametric PINN/parametric_pinn_50_impacts.py`
-  - One network learns `(t, phi1, phi2) -> x(t;phi1,phi2)` on `phi1 in [1,2]`, `phi2 in [10,20]`.
-  - Trains over the **entire** time horizon containing around 50 impacts, not segment-by-segment.
-  - Uses parameter-domain sampling (default 20 samples) during training and supports unseen in-range parameter inference, including impact-time extraction for all detected impacts.
+  - Stage 1: generates full 50-impact trajectories for sampled `(phi1, phi2)` using original `PIPNNs` + impact propagation.
+  - Stage 2: trains one parametric model `(t, phi1, phi2) -> [x, y]` with Adam + optional L-BFGS.
+  - Predicts unseen in-range responses and extracts impact times from `|x-y|-D` crossings.
 - `parametric PINN/parametric_pinn_50_impacts.ipynb`
-  - Notebook entry point to run the script workflow interactively.
+  - Notebook entry point for the same end-to-end pipeline.
 - `parametric PINN/README.md`
   - Usage and design notes.

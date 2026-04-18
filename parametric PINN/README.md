@@ -1,33 +1,40 @@
-# Parametric PINN (single model for full 50-impact horizon)
+# Parametric PINN (single model over full 50 impacts)
 
-This folder contains a **true parametric PINN** that learns one mapping:
+This folder now keeps the **original ideas/settings** from:
+- `PINN/pinn_ndof_chain_sim_tf2.ipynb`
+- `PINN/pinn_ndof_chain_tf2.py`
 
-\[(t, \phi_1, \phi_2) \rightarrow x(t;\phi_1,\phi_2)\]
+including original physical settings and training workflow (Adam + L-BFGS).
 
-with
-- \(\phi_1 \in [1, 2]\)
-- \(\phi_2 \in [10, 20]\)
+## What is implemented
 
-using **one neural network** for the **entire response window** (not per-impact segment).
+A two-stage workflow:
+
+1. **Legacy trajectory generation (original PINN logic):**
+   - For sampled `(phi1, phi2)` pairs, run the original segment-by-segment PINN (`PIPNNs`) for 50 impacts.
+   - Keep original defaults (`n_dof=20`, `m_x=1.0`, `m_y=0.3`, `k=1.0`, `D=1.0`, segment training with Adam + optional L-BFGS, etc.).
+2. **One parametric network for full horizon:**
+   - Train one model mapping `(t, phi1, phi2) -> [x(t), y(t)]` over all sampled cases.
+   - For unseen in-range parameters, predict full-horizon response directly and extract impact times from predicted `|x-y|-D` crossings.
 
 ## Files
+
 - `parametric_pinn_50_impacts.py`
-  - Samples parameter pairs (default 20 samples).
-  - Trains one PINN over all sampled parameters and full time range.
-  - Predicts response for unseen in-range parameters.
-  - Extracts approximate 50 impact times from a learned contact indicator.
+  - Contains:
+    - `LegacySimConfig` (original simulation/training defaults)
+    - `ParametricDataConfig`
+    - `ParametricModelConfig`
+    - `LegacyFullHorizonGenerator` (uses original `PIPNNs`, `find_impact_times`, `propagate_ics`)
+    - `ParametricFullHorizonPINN` (single network with Adam + L-BFGS)
 - `parametric_pinn_50_impacts.ipynb`
-  - Notebook wrapper to run training/prediction interactively.
+  - Notebook runner for the full pipeline.
 
 ## Quick start
+
 ```bash
 python "parametric PINN/parametric_pinn_50_impacts.py"
 ```
 
-Or open and run:
+Or run interactively via:
 
 - `parametric PINN/parametric_pinn_50_impacts.ipynb`
-
-## Notes
-- The implementation uses a smooth contact-force surrogate so the PINN can be trained end-to-end over long horizons with many impacts.
-- If you need the exact original impact law (with explicit impactor state updates), this file is a strong starting point and can be extended to multi-output state PINNs.
