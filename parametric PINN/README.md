@@ -16,11 +16,17 @@ using **one neural network** for the **entire response window** (not per-impact 
   - Trains one PINN over all sampled parameters and full time range.
   - Predicts response for unseen in-range parameters.
   - Extracts approximate 50 impact times from a learned contact indicator.
+- `parametric_pinn_50_impacts.ipynb`
+  - Notebook wrapper to run training/prediction interactively.
 
 ## Quick start
 ```bash
 python "parametric PINN/parametric_pinn_50_impacts.py"
 ```
+
+Or open and run:
+
+- `parametric PINN/parametric_pinn_50_impacts.ipynb`
 
 ## Notes
 - The implementation uses a smooth contact-force surrogate so the PINN can be trained end-to-end over long horizons with many impacts.

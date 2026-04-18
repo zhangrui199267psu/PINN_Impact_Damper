@@ -147,5 +147,7 @@ Added a new implementation for your requested parametric setup:
   - One network learns `(t, phi1, phi2) -> x(t;phi1,phi2)` on `phi1 in [1,2]`, `phi2 in [10,20]`.
   - Trains over the **entire** time horizon containing around 50 impacts, not segment-by-segment.
   - Uses parameter-domain sampling (default 20 samples) during training and supports unseen in-range parameter inference, including impact-time extraction for all detected impacts.
+- `parametric PINN/parametric_pinn_50_impacts.ipynb`
+  - Notebook entry point to run the script workflow interactively.
 - `parametric PINN/README.md`
   - Usage and design notes.
