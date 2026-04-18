@@ -137,3 +137,15 @@ This method tracks multiple ridges with a dynamic-programming continuity objecti
   - True parametric architecture with inputs `(t, phi1, phi2)` for one-model in-range interpolation.
 - `parametric_PINN/true_parametric_pinn.ipynb`
   - Example workflow: sample `N` points in a 2D `(phi1, phi2)` domain, train once, and predict unseen in-range cases (extrapolation outside range is not guaranteed).
+
+
+## New folder: `parametric PINN/` (single-model 50-impact learning)
+
+Added a new implementation for your requested parametric setup:
+
+- `parametric PINN/parametric_pinn_50_impacts.py`
+  - One network learns `(t, phi1, phi2) -> x(t;phi1,phi2)` on `phi1 in [1,2]`, `phi2 in [10,20]`.
+  - Trains over the **entire** time horizon containing around 50 impacts, not segment-by-segment.
+  - Uses parameter-domain sampling (default 20 samples) during training and supports unseen in-range parameter inference, including impact-time extraction for all detected impacts.
+- `parametric PINN/README.md`
+  - Usage and design notes.
