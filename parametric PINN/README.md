@@ -14,8 +14,8 @@ A two-stage workflow:
    - For sampled `(phi1, phi2)` pairs, run the original segment-by-segment PINN (`PIPNNs`) for 50 impacts.
    - Keep original defaults (`n_dof=20`, `m_x=1.0`, `m_y=0.3`, `k=1.0`, `D=1.0`, segment training with Adam + optional L-BFGS, etc.).
 2. **One parametric network for full horizon:**
-   - Train one model mapping `(t, phi1, phi2) -> [x(t), y(t)]` over all sampled cases.
-   - For unseen in-range parameters, predict full-horizon response directly and extract impact times from predicted `|x-y|-D` crossings.
+   - Train one model mapping `(t, phi1, phi2) -> x(t)` over all sampled cases (aligned with original PINN output convention).
+   - For unseen in-range parameters, predict full-horizon `x(t)` directly and extract approximate impact times from threshold crossings of `x`.
 
 ## Files
 

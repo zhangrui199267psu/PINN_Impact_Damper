@@ -8,10 +8,10 @@ Design (keeps original ideas/settings)
    original segment-by-segment solver `PIPNNs` (Adam + optional L-BFGS), using
    the same physical/optimization defaults from `pinn_ndof_chain_sim_tf2.ipynb`.
 2) Train ONE parametric network on aggregated trajectories:
-      (t, phi1, phi2) -> [x(t), y(t)]
-   where x: primary DOFs, y: impactor DOFs.
+      (t, phi1, phi2) -> x(t)
+   where x are the primary DOF responses (aligned with the original PINN).
 3) For unseen parameters, infer x(t;phi1,phi2) over the whole horizon and
-   extract impact times from predicted gap crossings |x-y|-D.
+   extract approximate impact times from response-threshold crossings.
 """
 
 from dataclasses import dataclass
@@ -60,7 +60,7 @@ class ParametricDataConfig:
 
 @dataclass
 class ParametricModelConfig:
-    layers: Tuple[int, ...] = (3, 128, 128, 128, 40)  # 40 = 2*n_dof for n_dof=20
+    layers: Tuple[int, ...] = (3, 128, 128, 128, 20)  # 20 = n_dof for n_dof=20
     lr: float = 1e-3
     adam_epochs: int = 5000
     log_every: int = 200
@@ -210,7 +210,7 @@ class ParametricFullHorizonPINN:
         self.sim_cfg = sim_cfg
         self.model_cfg = model_cfg
 
-        out_dim = 2 * sim_cfg.n_dof
+        out_dim = sim_cfg.n_dof
         if model_cfg.layers[-1] != out_dim:
             layers = list(model_cfg.layers)
             layers[-1] = out_dim
@@ -248,20 +248,17 @@ class ParametricFullHorizonPINN:
     def _forward(self, t: tf.Tensor, phi1: tf.Tensor, phi2: tf.Tensor):
         inp = tf.concat([t, phi1, phi2], axis=1)
         pred = self.net(self._norm(inp))
-        n = self.sim_cfg.n_dof
-        x = pred[:, :n]
-        y = pred[:, n:]
-        return x, y
+        return pred
 
     @tf.function
-    def _loss_components(self, t, phi1, phi2, x_data, y_data, t0_mask):
+    def _loss_components(self, t, phi1, phi2, x_data, t0_mask):
         n = self.sim_cfg.n_dof
 
         with tf.GradientTape() as tape2:
             tape2.watch(t)
             with tf.GradientTape() as tape1:
                 tape1.watch(t)
-                x_pred, y_pred = self._forward(t, phi1, phi2)
+                x_pred = self._forward(t, phi1, phi2)
             x_t = tf.squeeze(tape1.batch_jacobian(x_pred, t), axis=-1)  # [N, n]
         x_tt = tf.squeeze(tape2.batch_jacobian(x_t, t), axis=-1)  # [N, n]
 
@@ -277,19 +274,18 @@ class ParametricFullHorizonPINN:
             - forcing
         )
 
-        data_loss = tf.reduce_mean(tf.square(x_pred - x_data)) + tf.reduce_mean(tf.square(y_pred - y_data))
+        data_loss = tf.reduce_mean(tf.square(x_pred - x_data))
         phys_loss = tf.reduce_mean(tf.square(residual))
 
         # IC consistency on points with local-segment t = 0
         x0_pred = tf.boolean_mask(x_pred, t0_mask[:, 0])
-        y0_pred = tf.boolean_mask(y_pred, t0_mask[:, 0])
-        ic_loss = tf.reduce_mean(tf.square(x0_pred)) + tf.reduce_mean(tf.square(y0_pred))
+        ic_loss = tf.reduce_mean(tf.square(x0_pred))
         return data_loss, phys_loss, ic_loss
 
     @tf.function
-    def _adam_step(self, t, phi1, phi2, x_data, y_data, t0_mask):
+    def _adam_step(self, t, phi1, phi2, x_data, t0_mask):
         with tf.GradientTape() as tape:
-            d, p, i = self._loss_components(t, phi1, phi2, x_data, y_data, t0_mask)
+            d, p, i = self._loss_components(t, phi1, phi2, x_data, t0_mask)
             loss = self.model_cfg.beta_data * d + self.model_cfg.beta_phys * p + self.model_cfg.beta_ic * i
         grads = tape.gradient(loss, self.net.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.net.trainable_variables))
@@ -305,10 +301,10 @@ class ParametricFullHorizonPINN:
             v.assign(np.reshape(flat[idx:idx + n], v.shape))
             idx += n
 
-    def _lbfgs_objective(self, flat, t, phi1, phi2, x_data, y_data, t0_mask):
+    def _lbfgs_objective(self, flat, t, phi1, phi2, x_data, t0_mask):
         self._set_flat_params(flat.astype(np.float32))
         with tf.GradientTape() as tape:
-            d, p, i = self._loss_components(t, phi1, phi2, x_data, y_data, t0_mask)
+            d, p, i = self._loss_components(t, phi1, phi2, x_data, t0_mask)
             loss = self.model_cfg.beta_data * d + self.model_cfg.beta_phys * p + self.model_cfg.beta_ic * i
         grads = tape.gradient(loss, self.net.trainable_variables)
         gflat = np.concatenate([g.numpy().ravel() for g in grads]).astype(np.float64)
@@ -319,7 +315,6 @@ class ParametricFullHorizonPINN:
         phi1 = dataset["phi1"].astype(np.float32).reshape(-1, 1)
         phi2 = dataset["phi2"].astype(np.float32).reshape(-1, 1)
         x_data = dataset["x"].astype(np.float32)
-        y_data = dataset["y"].astype(np.float32)
         t0_mask = dataset["t_local"].reshape(-1, 1) < 1e-12
 
         self._set_normalization_bounds(float(np.max(t)), phi1_rng, phi2_rng)
@@ -328,11 +323,10 @@ class ParametricFullHorizonPINN:
         phi1_tf = tf.constant(phi1)
         phi2_tf = tf.constant(phi2)
         x_tf = tf.constant(x_data)
-        y_tf = tf.constant(y_data)
         t0_mask_tf = tf.constant(t0_mask)
 
         for ep in range(1, self.model_cfg.adam_epochs + 1):
-            total, d, p, i = self._adam_step(t_tf, phi1_tf, phi2_tf, x_tf, y_tf, t0_mask_tf)
+            total, d, p, i = self._adam_step(t_tf, phi1_tf, phi2_tf, x_tf, t0_mask_tf)
             if ep == 1 or ep % self.model_cfg.log_every == 0:
                 print(
                     f"ep={ep:5d} total={float(total):.3e} "
@@ -342,7 +336,7 @@ class ParametricFullHorizonPINN:
         if self.model_cfg.optimizer_LB:
             x0 = self._get_flat_params().astype(np.float64)
             minimize(
-                lambda z: self._lbfgs_objective(z, t_tf, phi1_tf, phi2_tf, x_tf, y_tf, t0_mask_tf),
+                lambda z: self._lbfgs_objective(z, t_tf, phi1_tf, phi2_tf, x_tf, t0_mask_tf),
                 x0,
                 method="L-BFGS-B",
                 jac=True,
@@ -356,21 +350,17 @@ class ParametricFullHorizonPINN:
                 },
             )
 
-    def predict_xy(self, t_query: np.ndarray, phi1: float, phi2: float):
+    def predict_x(self, t_query: np.ndarray, phi1: float, phi2: float):
         t = np.asarray(t_query, dtype=np.float32).reshape(-1, 1)
         p1 = np.full_like(t, float(phi1))
         p2 = np.full_like(t, float(phi2))
-        x, y = self._forward(tf.constant(t), tf.constant(p1), tf.constant(p2))
-        return x.numpy(), y.numpy()
-
-    def predict_x(self, t_query: np.ndarray, phi1: float, phi2: float):
-        x, _ = self.predict_xy(t_query, phi1, phi2)
-        return x
+        x = self._forward(tf.constant(t), tf.constant(p1), tf.constant(p2))
+        return x.numpy()
 
     def extract_impact_times(self, t_query: np.ndarray, phi1: float, phi2: float, D: float, max_impacts: int = 50):
-        x, y = self.predict_xy(t_query, phi1, phi2)
+        x = self.predict_x(t_query, phi1, phi2)
         t = np.asarray(t_query).reshape(-1)
-        gap = np.max(np.abs(x - y) - D, axis=1)
+        gap = np.max(np.abs(x) - D, axis=1)
 
         idx = np.where((gap[:-1] < 0.0) & (gap[1:] >= 0.0))[0]
         t_imp = []
@@ -444,7 +434,7 @@ if __name__ == "__main__":
         n_param_samples=20,
     )
     model_cfg = ParametricModelConfig(
-        layers=(3, 128, 128, 128, 2 * sim_cfg.n_dof),
+        layers=(3, 128, 128, 128, sim_cfg.n_dof),
         adam_epochs=2000,
         optimizer_LB=True,
     )
