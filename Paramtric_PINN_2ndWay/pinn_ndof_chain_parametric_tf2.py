@@ -150,6 +150,7 @@ class ParametricPIPNNs:
     optimizer_LB : bool — run L-BFGS-B polishing after Adam
     """
 
+    PARAM_ORDER = ('mx', 'my', 'k', 'phi1', 'phi2')
     N_PARAMS = 5   # mx, my, k, phi1, phi2
     INPUT_DIM = 6  # 1 (time) + 5 (params)
 
@@ -171,21 +172,44 @@ class ParametricPIPNNs:
         layers,
         hyp_ini_weight_loss,
         optimizer_LB=True,
+        fixed_params=None,
+        param_names=None,
     ):
         self.n_dof   = int(n_dof)
-        self.n_cases = int(params_cases.shape[0])
         self.T_seg   = float(T_seg)
         self.D       = float(D)
         self.c_damp  = float(c_damp)
 
+        p_in = np.asarray(params_cases, dtype=np.float32)
+        if p_in.ndim != 2:
+            raise ValueError('params_cases must be a 2D array.')
+
+        if param_names is None:
+            if p_in.shape[1] == self.N_PARAMS:
+                param_names = list(self.PARAM_ORDER)
+            elif p_in.shape[1] == 2:
+                param_names = ['phi1', 'phi2']
+            else:
+                raise ValueError(
+                    'param_names must be provided when params_cases has '
+                    f'{p_in.shape[1]} columns.'
+                )
+
+        self.param_names = [str(nm) for nm in param_names]
+        self.fixed_params = self._normalise_fixed_params(fixed_params)
+        self.n_cases = int(p_in.shape[0])
+
+        p = self._expand_params_to_full(p_in, self.param_names, self.fixed_params)
+        lb_full = self._expand_bounds_to_full(lb_params, self.param_names, self.fixed_params, 'lb_params')
+        ub_full = self._expand_bounds_to_full(ub_params, self.param_names, self.fixed_params, 'ub_params')
+
         # ── normalisation bounds: [t_lb, param_lb...] ─────────────────────
-        lb_all = np.array([0.0, *lb_params], dtype=np.float32)
-        ub_all = np.array([T_seg, *ub_params], dtype=np.float32)
+        lb_all = np.array([0.0, *lb_full], dtype=np.float32)
+        ub_all = np.array([T_seg, *ub_full], dtype=np.float32)
         self.lb = tf.constant(lb_all.reshape(1, -1))   # [1, 6]
         self.ub = tf.constant(ub_all.reshape(1, -1))   # [1, 6]
 
         # ── params per case ───────────────────────────────────────────────
-        p = np.asarray(params_cases, dtype=np.float32)  # [n_cases, 5]
         self.params_cases = tf.constant(p)
 
         # ── accumulated phase offsets ──────────────────────────────────────
@@ -233,6 +257,68 @@ class ParametricPIPNNs:
         self.loss_log     = []
         self.loss_icx_log = []
         self.loss_fx_log  = []
+
+    @classmethod
+    def _normalise_fixed_params(cls, fixed_params):
+        if fixed_params is None:
+            fixed_params = {'mx': 1.0, 'my': 0.3, 'k': 1.0}
+        defaults = {'mx': 1.0, 'my': 0.3, 'k': 1.0, 'phi1': None, 'phi2': None}
+        defaults.update(fixed_params)
+        if defaults['phi1'] is None or defaults['phi2'] is None:
+            # allow phi1/phi2 to be free (provided in params_cases) unless
+            # explicitly fixed by user
+            pass
+        return defaults
+
+    @classmethod
+    def _expand_params_to_full(cls, params_cases, param_names, fixed_params):
+        p = np.asarray(params_cases, dtype=np.float32)
+        full = np.zeros((p.shape[0], cls.N_PARAMS), dtype=np.float32)
+        name_to_idx = {nm: i for i, nm in enumerate(cls.PARAM_ORDER)}
+
+        for key in cls.PARAM_ORDER:
+            if key in param_names:
+                src_idx = param_names.index(key)
+                full[:, name_to_idx[key]] = p[:, src_idx]
+            else:
+                val = fixed_params.get(key, None)
+                if val is None:
+                    raise ValueError(f'Missing fixed value for parameter "{key}".')
+                full[:, name_to_idx[key]] = float(val)
+        return full
+
+    @classmethod
+    def _expand_bounds_to_full(cls, bounds, param_names, fixed_params, label):
+        b = np.asarray(bounds, dtype=np.float32).flatten()
+        if b.size == cls.N_PARAMS and list(param_names) == list(cls.PARAM_ORDER):
+            return b
+        if b.size != len(param_names):
+            raise ValueError(f'{label} must have length {len(param_names)} (or 5 for full params).')
+
+        out = np.zeros((cls.N_PARAMS,), dtype=np.float32)
+        name_to_idx = {nm: i for i, nm in enumerate(cls.PARAM_ORDER)}
+        for key in cls.PARAM_ORDER:
+            if key in param_names:
+                out[name_to_idx[key]] = b[param_names.index(key)]
+            else:
+                val = fixed_params.get(key, None)
+                if val is None:
+                    raise ValueError(f'Missing fixed value for parameter "{key}" while expanding {label}.')
+                out[name_to_idx[key]] = float(val)
+        return out
+
+    def _coerce_params_row(self, params_row):
+        p = np.asarray(params_row, dtype=np.float32).flatten()
+        if p.size == self.N_PARAMS:
+            return p
+        if p.size == len(self.param_names):
+            p = p.reshape(1, -1)
+            full = self._expand_params_to_full(p, self.param_names, self.fixed_params)
+            return full.flatten()
+        raise ValueError(
+            f'params_row must have length {len(self.param_names)} '
+            f'(active params) or {self.N_PARAMS} (full params).'
+        )
 
     # ------------------------------------------------------------------
     # Network initialisation
@@ -433,14 +519,15 @@ class ParametricPIPNNs:
         Parameters
         ----------
         t_vals    : (N,) or (N,1) — times in [0, T_seg]
-        params_row: array-like length 5 — [mx, my, k, phi1, phi2]
+        params_row: array-like length 5 (full), or length len(self.param_names)
+                    when using a reduced parameterization.
 
         Returns
         -------
         x, x_t, x_tt : each (N, n_dof) numpy
         """
         t_arr = np.asarray(t_vals, dtype=np.float32).reshape(-1, 1)
-        p_row = np.asarray(params_row, dtype=np.float32).reshape(1, self.N_PARAMS)
+        p_row = self._coerce_params_row(params_row).reshape(1, self.N_PARAMS)
 
         N = t_arr.shape[0]
         t_tf = tf.constant(t_arr)
@@ -540,7 +627,8 @@ def find_impact_times_for_params(model, params_row, y0_row, yt0_row,
     Parameters
     ----------
     model      : ParametricPIPNNs
-    params_row : array-like, shape (5,)  [mx, my, k, phi1, phi2]
+    params_row : array-like, shape (5,) full parameters, or
+                 shape (len(model.param_names),) reduced parameters
     y0_row     : array-like, shape (n_dof,)
     yt0_row    : array-like, shape (n_dof,)
     n_scan     : int
@@ -557,8 +645,10 @@ def find_impact_times_for_params(model, params_row, y0_row, yt0_row,
     yt0   = np.asarray(yt0_row, dtype=np.float64).flatten()
     D     = float(model.D)
 
+    p_full = model._coerce_params_row(params_row)
+
     t_scan = np.linspace(0.0, T_max, n_scan, dtype=np.float32)
-    x_scan, _, _ = model.predict_with_params(t_scan, params_row)
+    x_scan, _, _ = model.predict_with_params(t_scan, p_full)
     t_flat = t_scan.astype(np.float64)
 
     t_impacts = np.full(n, T_max)
@@ -584,7 +674,7 @@ def find_impact_times_for_params(model, params_row, y0_row, yt0_row,
         def _gap(t_val, _i=i, _y0=y0[i], _yt0=yt0[i]):
             xv, _, _ = model.predict_with_params(
                 np.array([t_val], dtype=np.float32),
-                params_row,
+                p_full,
             )
             return abs(float(xv[0, _i]) - (_y0 + _yt0 * t_val)) - D
 
@@ -686,6 +776,8 @@ def rollout_full_sequence_with_model_pool(
     xt0_init=None,
     y0_init=None,
     yt0_init=None,
+    fixed_params=None,
+    param_names=None,
 ):
     """
     Full-sequence rollout over all trained segment models for a new parameter row.
@@ -694,8 +786,8 @@ def rollout_full_sequence_with_model_pool(
     ----------
     model_pool : list[ParametricPIPNNs]
         One trained model per segment, e.g. `all_models` from the notebook.
-    params_row : array-like, shape (5,)
-        [mx, my, k, phi1, phi2].
+    params_row : array-like
+        Full [mx, my, k, phi1, phi2] row, or reduced row (e.g. [phi1, phi2]).
     n_dof      : int
     r          : float
     N_col      : int
@@ -716,10 +808,24 @@ def rollout_full_sequence_with_model_pool(
         raise ValueError('model_pool cannot be empty.')
 
     params_row = np.asarray(params_row, dtype=np.float32).flatten()
-    if params_row.size != 5:
-        raise ValueError('params_row must have length 5: [mx, my, k, phi1, phi2].')
+    first_model = model_pool[0]
+    if hasattr(first_model, '_coerce_params_row'):
+        params_full = first_model._coerce_params_row(params_row)
+    else:
+        if params_row.size == 5:
+            params_full = params_row
+        elif params_row.size == 2:
+            pnames = ['phi1', 'phi2'] if param_names is None else list(param_names)
+            fixed = {'mx': 1.0, 'my': 0.3, 'k': 1.0}
+            if fixed_params is not None:
+                fixed.update(fixed_params)
+            params_full = ParametricPIPNNs._expand_params_to_full(
+                params_row.reshape(1, -1), pnames, fixed
+            ).flatten()
+        else:
+            raise ValueError('params_row must have length 5 or 2.')
 
-    mx, my = float(params_row[0]), float(params_row[1])
+    mx, my = float(params_full[0]), float(params_full[1])
 
     x0 = np.zeros(n_dof, dtype=np.float32) if x0_init is None else np.asarray(x0_init, dtype=np.float32).copy()
     xt0 = np.zeros(n_dof, dtype=np.float32) if xt0_init is None else np.asarray(xt0_init, dtype=np.float32).copy()
@@ -736,12 +842,12 @@ def rollout_full_sequence_with_model_pool(
         seg_model.y0_cases[0, :] = y0
         seg_model.yt0_cases[0, :] = yt0
 
-        t_imps, hit = find_impact_times_for_params(seg_model, params_row, y0, yt0)
+        t_imps, hit = find_impact_times_for_params(seg_model, params_full, y0, yt0)
         first_dof = int(np.argmin(t_imps))
         t_imp = float(t_imps[first_dof])
 
         t_seg = np.linspace(0.0, t_imp, N_col + 1, dtype=np.float32)
-        x_seg, _, _ = seg_model.predict_with_params(t_seg, params_row)
+        x_seg, _, _ = seg_model.predict_with_params(t_seg, params_full)
         y_seg = y0[None, :] + t_seg[:, None] * yt0[None, :]
 
         all_t.append(t_seg + t_cumulative)
@@ -752,7 +858,7 @@ def rollout_full_sequence_with_model_pool(
 
         x_end, xt_end, _ = seg_model.predict_with_params(
             np.array([t_imp], dtype=np.float32),
-            params_row,
+            params_full,
         )
         if hit.any():
             x0, xt0, y0, yt0 = propagate_ics_for_params(
