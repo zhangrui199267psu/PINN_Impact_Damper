@@ -9,9 +9,9 @@ for any parameter combination within the sampled range are free.
 
 Network
 -------
-    f(t, mx, my, k, phi1, phi2)  →  (x_1, …, x_{n_dof})
+    f(t, p_1, ..., p_m)  →  (x_1, …, x_{n_dof}), with user-selectable parametric inputs
 
-Varied physical parameters (one set per training case):
+Physical parameter names (can be fully or partially parametric):
     mx    — primary (outer) mass
     my    — impactor (inner) mass  [only enters impact update, not ODE]
     k     — nearest-neighbour coupling spring stiffness
@@ -127,15 +127,16 @@ class ParametricPIPNNs:
     """
     Parametric PINN for an n-DOF impact-damper chain (TF2).
 
-    One network f(t, mx, my, k, phi1, phi2) → (x_1,…,x_n) is trained
-    simultaneously on n_cases LHS-sampled parameter sets.
+    One network f(t, p_1,…,p_m) → (x_1,…,x_n) is trained
+    simultaneously on n_cases LHS-sampled parameter sets, where m is the
+    number of selected parametric parameters.
 
     Parameters
     ----------
     n_dof        : int
-    params_cases : (n_cases, 5) — [mx, my, k, phi1, phi2] per case
-    lb_params    : (5,) lower normalisation bounds for the 5 parameters
-    ub_params    : (5,) upper normalisation bounds
+    params_cases : (n_cases, n_parametric) — selected parametric values per case
+    lb_params    : (n_parametric,) lower normalisation bounds for selected params
+    ub_params    : (n_parametric,) upper normalisation bounds
     c_damp       : float — fixed proportional damping coefficient (0 = undamped)
     T_seg        : float — segment duration [0, T_seg]
     N_col        : int   — collocation points per case
@@ -145,13 +146,13 @@ class ParametricPIPNNs:
     y0_cases     : (n_cases, n_dof) — impactor IC positions
     yt0_cases    : (n_cases, n_dof) — impactor IC velocities
     D            : float — impact gap (uniform across DOFs and cases)
-    layers       : list[int] e.g. [6, 64, 64, n_dof]
+    layers       : list[int] e.g. [1+n_parametric, 64, 64, n_dof]
     hyp_ini_weight_loss : [beta_ic, beta_ode]
     optimizer_LB : bool — run L-BFGS-B polishing after Adam
     """
 
-    N_PARAMS = 5   # mx, my, k, phi1, phi2
-    INPUT_DIM = 6  # 1 (time) + 5 (params)
+    FULL_PARAM_NAMES = ('mx', 'my', 'k', 'phi1', 'phi2')
+    N_FULL_PARAMS = 5
 
     def __init__(
         self,
@@ -171,6 +172,8 @@ class ParametricPIPNNs:
         layers,
         hyp_ini_weight_loss,
         optimizer_LB=True,
+        parametric_params=None,
+        fixed_params=None,
     ):
         self.n_dof   = int(n_dof)
         self.n_cases = int(params_cases.shape[0])
@@ -178,15 +181,78 @@ class ParametricPIPNNs:
         self.D       = float(D)
         self.c_damp  = float(c_damp)
 
+        # ── selectable parametric configuration ───────────────────────────
+        if parametric_params is None:
+            if params_cases.shape[1] != self.N_FULL_PARAMS:
+                raise ValueError(
+                    'If parametric_params is None, params_cases must have 5 columns '
+                    '[mx, my, k, phi1, phi2].'
+                )
+            self.parametric_params = list(self.FULL_PARAM_NAMES)
+        else:
+            self.parametric_params = [str(pn) for pn in parametric_params]
+            if len(set(self.parametric_params)) != len(self.parametric_params):
+                raise ValueError('parametric_params must not contain duplicates.')
+            unknown = [pn for pn in self.parametric_params if pn not in self.FULL_PARAM_NAMES]
+            if unknown:
+                raise ValueError(f'Unknown parameter names in parametric_params: {unknown}')
+
+        self.n_parametric = len(self.parametric_params)
+        if self.n_parametric == 0:
+            raise ValueError('At least one parameter must be parametric.')
+
+        if len(lb_params) != self.n_parametric or len(ub_params) != self.n_parametric:
+            raise ValueError('lb_params and ub_params must match len(parametric_params).')
+
+        p_active = np.asarray(params_cases, dtype=np.float32)
+        if p_active.shape[1] != self.n_parametric:
+            raise ValueError(
+                f'params_cases must have {self.n_parametric} columns for selected '
+                f'parametric_params={self.parametric_params}.'
+            )
+
+        fixed_vec = np.zeros(self.N_FULL_PARAMS, dtype=np.float32)
+        if fixed_params is not None:
+            if isinstance(fixed_params, dict):
+                for kname, kval in fixed_params.items():
+                    if kname not in self.FULL_PARAM_NAMES:
+                        raise ValueError(f'Unknown fixed parameter name: {kname}')
+                    fixed_vec[self.FULL_PARAM_NAMES.index(kname)] = float(kval)
+            else:
+                fixed_arr = np.asarray(fixed_params, dtype=np.float32).flatten()
+                if fixed_arr.size != self.N_FULL_PARAMS:
+                    raise ValueError('fixed_params must be a dict or length-5 array.')
+                fixed_vec = fixed_arr
+
+        missing_fixed = [
+            name for name in self.FULL_PARAM_NAMES
+            if name not in self.parametric_params and fixed_params is None
+        ]
+        if missing_fixed:
+            raise ValueError(
+                'fixed_params is required when not all parameters are parametric. '
+                f'Missing fixed values for: {missing_fixed}'
+            )
+
+        p_full = np.tile(fixed_vec[None, :], (self.n_cases, 1))
+        self.parametric_indices = [self.FULL_PARAM_NAMES.index(pn) for pn in self.parametric_params]
+        self.full_to_active = {fi: ai for ai, fi in enumerate(self.parametric_indices)}
+        for ai, fi in enumerate(self.parametric_indices):
+            p_full[:, fi] = p_active[:, ai]
+
+        self.fixed_params_full = p_full[0].copy()
+        for fi in self.parametric_indices:
+            self.fixed_params_full[fi] = 0.0
+
         # ── normalisation bounds: [t_lb, param_lb...] ─────────────────────
         lb_all = np.array([0.0, *lb_params], dtype=np.float32)
         ub_all = np.array([T_seg, *ub_params], dtype=np.float32)
-        self.lb = tf.constant(lb_all.reshape(1, -1))   # [1, 6]
-        self.ub = tf.constant(ub_all.reshape(1, -1))   # [1, 6]
+        self.lb = tf.constant(lb_all.reshape(1, -1))
+        self.ub = tf.constant(ub_all.reshape(1, -1))
 
         # ── params per case ───────────────────────────────────────────────
-        p = np.asarray(params_cases, dtype=np.float32)  # [n_cases, 5]
-        self.params_cases = tf.constant(p)
+        self.params_cases = tf.constant(p_full)         # full [n_cases, 5]
+        self.params_cases_active = tf.constant(p_active)  # active [n_cases, n_parametric]
 
         # ── accumulated phase offsets ──────────────────────────────────────
         self.phi_offsets_np = np.asarray(phi_offsets, dtype=np.float32).reshape(-1, 1)
@@ -203,17 +269,17 @@ class ParametricPIPNNs:
         # t: N_col uniform points in (0, T_seg], tiled for each case
         t_one = np.linspace(0, T_seg, N_col, dtype=np.float32).reshape(-1, 1)
         t_rep = np.tile(t_one, (self.n_cases, 1))                 # [n*N, 1]
-        p_rep = np.repeat(p, N_col, axis=0)                       # [n*N, 5]
+        p_rep = np.repeat(p_active, N_col, axis=0)
         phi_rep = np.repeat(self.phi_offsets_np, N_col, axis=0)   # [n*N, 1]
 
         self.t_col      = tf.constant(t_rep)     # [n_cases*N_col, 1]
-        self.params_col = tf.constant(p_rep)     # [n_cases*N_col, 5]
+        self.params_col = tf.constant(p_rep)
         self.phi_col    = tf.constant(phi_rep)   # [n_cases*N_col, 1]
 
         # ── IC collocation data (IC loss) ──────────────────────────────────
         t0_all  = np.zeros((self.n_cases, 1), dtype=np.float32)
         self.t0_col      = tf.constant(t0_all)
-        self.params0_col = self.params_cases       # [n_cases, 5]
+        self.params0_col = self.params_cases_active
         self.phi0_col    = tf.constant(self.phi_offsets_np)
 
         # ── loss weights ───────────────────────────────────────────────────
@@ -270,7 +336,7 @@ class ParametricPIPNNs:
         Compute x, ẋ, ẍ via nested GradientTape + batch_jacobian.
 
         t_col     : [N, 1]  — watched tensor
-        params_col: [N, 5]
+        params_col: [N, n_parametric]
 
         Returns x [N,n], x_t [N,n], x_tt [N,n]
         """
@@ -278,11 +344,23 @@ class ParametricPIPNNs:
             tape2.watch(t_col)
             with tf.GradientTape() as tape1:
                 tape1.watch(t_col)
-                inp = tf.concat([t_col, params_col], axis=1)  # [N, 6]
+                inp = tf.concat([t_col, params_col], axis=1)
                 x = self._neural_net(inp)                      # [N, n_dof]
             x_t  = tf.squeeze(tape1.batch_jacobian(x,   t_col), axis=-1)  # [N, n_dof]
         x_tt = tf.squeeze(tape2.batch_jacobian(x_t, t_col), axis=-1)      # [N, n_dof]
         return x, x_t, x_tt
+
+    def _expand_to_full_params(self, params_col):
+        """Map active param columns to full [mx,my,k,phi1,phi2] columns."""
+        cols = []
+        base = tf.ones((tf.shape(params_col)[0], 1), dtype=tf.float32)
+        for fi in range(self.N_FULL_PARAMS):
+            if fi in self.full_to_active:
+                ai = self.full_to_active[fi]
+                cols.append(params_col[:, ai:ai + 1])
+            else:
+                cols.append(base * self.fixed_params_full[fi])
+        return tf.concat(cols, axis=1)
 
     # ------------------------------------------------------------------
     # ODE residual
@@ -296,11 +374,12 @@ class ParametricPIPNNs:
             col 1: my   (not in ODE — only used in impact update)
         """
         x, x_t, x_tt = self._net_u(t_col, params_col)
+        params_full = self._expand_to_full_params(params_col)
 
-        mx_col   = params_col[:, 0:1]   # [N, 1]
-        k_col    = params_col[:, 2:3]   # [N, 1]
-        phi1_col = params_col[:, 3:4]   # [N, 1]
-        phi2_col = params_col[:, 4:5]   # [N, 1]
+        mx_col   = params_full[:, 0:1]   # [N, 1]
+        k_col    = params_full[:, 2:3]   # [N, 1]
+        phi1_col = params_full[:, 3:4]   # [N, 1]
+        phi2_col = params_full[:, 4:5]   # [N, 1]
 
         # K·x and C·ẋ  (tridiagonal, per-row spring constant)
         Kx  = _tridiag_matvec(x,   k_col)                          # [N, n_dof]
@@ -422,7 +501,7 @@ class ParametricPIPNNs:
         t_arr = np.asarray(t_vals, dtype=np.float32).reshape(-1, 1)
         N = t_arr.shape[0]
         t_tf = tf.constant(t_arr)
-        p_j  = tf.repeat(self.params_cases[case_idx:case_idx + 1, :], N, axis=0)
+        p_j  = tf.repeat(self.params_cases_active[case_idx:case_idx + 1, :], N, axis=0)
         x, x_t, x_tt = self._net_u(t_tf, p_j)
         return x.numpy(), x_t.numpy(), x_tt.numpy()
 
@@ -433,14 +512,23 @@ class ParametricPIPNNs:
         Parameters
         ----------
         t_vals    : (N,) or (N,1) — times in [0, T_seg]
-        params_row: array-like length 5 — [mx, my, k, phi1, phi2]
+        params_row: array-like length n_parametric or 5
 
         Returns
         -------
         x, x_t, x_tt : each (N, n_dof) numpy
         """
         t_arr = np.asarray(t_vals, dtype=np.float32).reshape(-1, 1)
-        p_row = np.asarray(params_row, dtype=np.float32).reshape(1, self.N_PARAMS)
+        p_in = np.asarray(params_row, dtype=np.float32).flatten()
+        if p_in.size == self.n_parametric:
+            p_row = p_in.reshape(1, self.n_parametric)
+        elif p_in.size == self.N_FULL_PARAMS:
+            p_row = p_in[np.array(self.parametric_indices, dtype=int)].reshape(1, self.n_parametric)
+        else:
+            raise ValueError(
+                f'params_row must have length {self.n_parametric} (active only) '
+                f'or {self.N_FULL_PARAMS} (full vector).'
+            )
 
         N = t_arr.shape[0]
         t_tf = tf.constant(t_arr)
@@ -716,7 +804,7 @@ def rollout_full_sequence_with_model_pool(
         raise ValueError('model_pool cannot be empty.')
 
     params_row = np.asarray(params_row, dtype=np.float32).flatten()
-    if params_row.size != 5:
+    if params_row.size != ParametricPIPNNs.N_FULL_PARAMS:
         raise ValueError('params_row must have length 5: [mx, my, k, phi1, phi2].')
 
     mx, my = float(params_row[0]), float(params_row[1])
