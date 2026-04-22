@@ -40,6 +40,8 @@ from matplotlib.ticker import MaxNLocator
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks
 
+from Dispersion.dispersion_theory import impact_damper_branches
+
 
 # ---------------------------------------------------------------------------
 # Save / load helpers (used by pinn_ndof_chain_sim.ipynb and this notebook)
@@ -233,6 +235,7 @@ def plot_dispersion_heatmap(
     save_path=None,
     figsize=(7, 5),
     omega_max=None,
+    impact_curve_params=None,
 ):
     """
     Plot |FFT_2D(x_n(t))|² as a (k, ω) heatmap with the linear dispersion overlay.
@@ -245,6 +248,16 @@ def plot_dispersion_heatmap(
     save_path      : optional file path
     figsize        : (w, h) inches
     omega_max      : clip ω axis (None = 1.5 × linear max)
+    impact_curve_params : dict or None
+        Optional overlay for impact-damper branches. Example:
+            {
+                'p': 1.0,
+                'm': 1.0,
+                'k_coupling': 1.0,
+                'mu': 0.3,
+                'p_ref': 1.0,
+                'n_subharmonic': 8,
+            }
 
     Returns
     -------
@@ -283,6 +296,24 @@ def plot_dispersion_heatmap(
     k_line = np.linspace(0, np.pi, 300)
     ax.plot(k_line / np.pi, linear_dispersion(k_line, k_coupling, mx),
             'w--', lw=LW, label=r'Linear  ($D \to \infty$)')
+
+    if impact_curve_params is not None:
+        pars = {
+            'p': impact_curve_params.get('p', 1.0),
+            'm': impact_curve_params.get('m', mx),
+            'k_coupling': impact_curve_params.get('k_coupling', k_coupling),
+            'mu': impact_curve_params.get('mu', 0.3),
+            'p_ref': impact_curve_params.get('p_ref', 1.0),
+            'n_subharmonic': impact_curve_params.get('n_subharmonic', 8),
+        }
+        impact = impact_damper_branches(k_line, **pars)
+        ax.plot(k_line / np.pi, impact['omega_acoustic'],
+                color='cyan', lw=1.8, ls='-', label='Impact acoustic')
+        ax.plot(k_line / np.pi, impact['omega_optical'],
+                color='cyan', lw=1.8, ls='-.', label='Impact optical')
+        for i, om_sh in enumerate(impact['omega_subharmonics']):
+            ax.plot(k_line / np.pi, om_sh, color='cyan', lw=0.8, alpha=0.28,
+                    label='Impact subharmonics' if i == 0 else None)
 
     ax.set_xlabel(r'Wavenumber  $k / \pi$',        fontsize=FS, labelpad=8)
     ax.set_ylabel(r'Frequency  $\omega$  (rad/s)',  fontsize=FS, labelpad=10)
