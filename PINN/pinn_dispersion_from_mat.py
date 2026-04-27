@@ -40,6 +40,8 @@ from matplotlib.ticker import MaxNLocator
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks
 
+from Dispersion.dispersion_theory import impact_damper_branches, mass_in_mass_dispersion
+
 
 # ---------------------------------------------------------------------------
 # Save / load helpers (used by pinn_ndof_chain_sim.ipynb and this notebook)
@@ -233,6 +235,7 @@ def plot_dispersion_heatmap(
     save_path=None,
     figsize=(7, 5),
     omega_max=None,
+    impact_curve_params=None,
 ):
     """
     Plot |FFT_2D(x_n(t))|² as a (k, ω) heatmap with the linear dispersion overlay.
@@ -245,6 +248,16 @@ def plot_dispersion_heatmap(
     save_path      : optional file path
     figsize        : (w, h) inches
     omega_max      : clip ω axis (None = 1.5 × linear max)
+    impact_curve_params : dict or None
+        Optional overlay for impact-damper branches. Example:
+            {
+                'p': 1.0,
+                'm': 1.0,
+                'k_coupling': 1.0,
+                'mu': 0.3,
+                'p_ref': 1.0,
+                'n_subharmonic': 8,
+            }
 
     Returns
     -------
@@ -283,6 +296,24 @@ def plot_dispersion_heatmap(
     k_line = np.linspace(0, np.pi, 300)
     ax.plot(k_line / np.pi, linear_dispersion(k_line, k_coupling, mx),
             'w--', lw=LW, label=r'Linear  ($D \to \infty$)')
+
+    if impact_curve_params is not None:
+        pars = {
+            'p': impact_curve_params.get('p', 1.0),
+            'm': impact_curve_params.get('m', mx),
+            'k_coupling': impact_curve_params.get('k_coupling', k_coupling),
+            'mu': impact_curve_params.get('mu', 0.3),
+            'p_ref': impact_curve_params.get('p_ref', 1.0),
+            'n_subharmonic': impact_curve_params.get('n_subharmonic', 8),
+        }
+        impact = impact_damper_branches(k_line, **pars)
+        ax.plot(k_line / np.pi, impact['omega_acoustic'],
+                color='cyan', lw=1.8, ls='-', label='Impact acoustic')
+        ax.plot(k_line / np.pi, impact['omega_optical'],
+                color='cyan', lw=1.8, ls='-.', label='Impact optical')
+        for i, om_sh in enumerate(impact['omega_subharmonics']):
+            ax.plot(k_line / np.pi, om_sh, color='cyan', lw=0.8, alpha=0.28,
+                    label='Impact subharmonics' if i == 0 else None)
 
     ax.set_xlabel(r'Wavenumber  $k / \pi$',        fontsize=FS, labelpad=8)
     ax.set_ylabel(r'Frequency  $\omega$  (rad/s)',  fontsize=FS, labelpad=10)
@@ -387,3 +418,128 @@ def extract_ridge_in_band(k_pos, omega_band, spec_band, omega_min=0.0):
         if row.max() > 0:
             omega_ridge[i] = omega_band[i_min + int(np.argmax(row))]
     return omega_ridge
+
+
+def plot_pinn_vs_bloch_comparison(
+    k_pos,
+    omega_pos,
+    spectrum,
+    k_coupling,
+    mx,
+    my=0.3,
+    k_int_bloch=None,
+    omega_min=0.01,
+    omega_max=None,
+    figsize=(7.2, 5.2),
+):
+    """
+    Compare PINN-based ridge (from FFT spectrum) against Bloch-based curves.
+
+    Bloch overlays:
+      1) monoatomic branch (host chain),
+      2) mass-in-mass acoustic/optical branches if k_int_bloch is provided.
+    """
+    k_ridge, omega_ridge = extract_ridge(k_pos, omega_pos, spectrum, omega_min=omega_min)
+    k_line = np.linspace(0.0, np.pi, 400)
+
+    mono = linear_dispersion(k_line, k_coupling, mx)
+    out = {
+        'k_ridge': k_ridge,
+        'omega_ridge': omega_ridge,
+        'k_line': k_line,
+        'omega_mono': mono,
+        'omega_mim_lo': None,
+        'omega_mim_hi': None,
+    }
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(k_line / np.pi, mono, 'k--', lw=1.8, label='Bloch monoatomic')
+    ax.plot(k_ridge / np.pi, omega_ridge, 'o', ms=4.0, color='tab:blue', alpha=0.9,
+            label='PINN ridge (FFT)')
+
+    if k_int_bloch is not None:
+        om_lo, om_hi = mass_in_mass_dispersion(k_line, k_coupling, mx, my, k_int_bloch)
+        out['omega_mim_lo'] = om_lo
+        out['omega_mim_hi'] = om_hi
+        ax.plot(k_line / np.pi, om_lo, color='tab:orange', lw=2.0,
+                label=f'Bloch acoustic (k_int={k_int_bloch:.3g})')
+        ax.plot(k_line / np.pi, om_hi, color='tab:red', lw=2.0,
+                label='Bloch optical')
+
+    if omega_max is None:
+        omega_max = float(omega_pos[-1]) if len(omega_pos) else 1.0
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, omega_max)
+    ax.set_xlabel(r'Wavenumber $k/\pi$')
+    ax.set_ylabel(r'Frequency $\omega$ (rad/s)')
+    ax.grid(alpha=0.25)
+    ax.legend(framealpha=0.75)
+    fig.tight_layout()
+    return fig, ax, out
+
+
+def estimate_impact_impulses_from_pinn(
+    t_uniform,
+    X_uniform,
+    mx,
+    accel_percentile=99.0,
+    min_peak_distance=3,
+    pre_samples=1,
+    post_samples=1,
+):
+    """
+    Estimate per-impact impulse from PINN displacement histories.
+
+    Data-driven approximation based on velocity jumps around acceleration spikes:
+
+        J ≈ m_x * (v_after - v_before)
+
+    The output can guide the `p` selection in impact-branch reduced models.
+    """
+    t_uniform = np.asarray(t_uniform, dtype=float)
+    X_uniform = np.asarray(X_uniform, dtype=float)
+    if X_uniform.ndim != 2:
+        raise ValueError('X_uniform must be 2D with shape (n_dof, n_time).')
+
+    dt = float(t_uniform[1] - t_uniform[0])
+    vel = np.gradient(X_uniform, dt, axis=1)
+    acc = np.gradient(vel, dt, axis=1)
+
+    impulses = []
+    times = []
+    dof_ids = []
+
+    for i in range(X_uniform.shape[0]):
+        a_abs = np.abs(acc[i])
+        thr = np.percentile(a_abs, accel_percentile)
+        peaks, _ = find_peaks(a_abs, height=thr, distance=min_peak_distance)
+
+        for idx in peaks:
+            i0 = max(idx - pre_samples, 0)
+            i1 = min(idx + post_samples, X_uniform.shape[1] - 1)
+            dv = vel[i, i1] - vel[i, i0]
+            J = mx * dv
+            impulses.append(J)
+            times.append(t_uniform[idx])
+            dof_ids.append(i)
+
+    impulses = np.asarray(impulses, dtype=float)
+    impulses_abs = np.abs(impulses)
+
+    if impulses_abs.size == 0:
+        p_recommended = 0.0
+        p_mean_abs = 0.0
+    else:
+        p_recommended = float(np.median(impulses_abs))
+        p_mean_abs = float(np.mean(impulses_abs))
+
+    return {
+        'impulses': impulses,
+        'impulses_abs': impulses_abs,
+        'times': np.asarray(times, dtype=float),
+        'dof_ids': np.asarray(dof_ids, dtype=int),
+        'p_recommended': p_recommended,
+        'p_mean_abs': p_mean_abs,
+        'n_events': int(impulses_abs.size),
+        'accel_percentile': float(accel_percentile),
+    }
