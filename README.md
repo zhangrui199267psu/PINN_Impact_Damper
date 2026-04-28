@@ -1,6 +1,6 @@
 # PINN Impact Damper
 
-This repository contains code and results for studying wave propagation and transient response in an impact-damper chain using a Physics-Informed Neural Network (PINN) workflow.
+This repository contains code and results for studying wave propagation and response in an impact-damper chain using a Physics-Informed Neural Network (PINN) workflow.
 
 ## Repository Layout
 
