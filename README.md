@@ -1,6 +1,17 @@
-# PINN Impact Damper
+# PINN Impact Damper (Free-Free Multi-DOF Chain)
 
-This repository contains code and results for studying wave propagation and response in an impact-damper chain using a Physics-Informed Neural Network (PINN) workflow.
+This repository contains a Physics-Informed Neural Network (PINN) workflow for a **multi-degree-of-freedom (multi-DOF) impact chain system** (current baseline: **20 DOFs**) with **free-free boundary conditions**.
+
+The main study setup is:
+- free-free chain dynamics,
+- **left external mass initialized with velocity**,
+- three baseline initial-velocity levels: **1, 2, and 10 m/s**,
+- transient response prediction and post-processing,
+- dispersion-curve generation and comparison (used for double-checking consistency of results).
+
+Future/ongoing scaling studies are intended for higher-order systems, e.g. **50 DOFs** and **100 DOFs**.
+
+---
 
 ## Repository Layout
 
@@ -21,16 +32,30 @@ PINN_Impact_Damper/
 └── README.md
 ```
 
-## What is Included
+---
 
-- **PINN solver script** (`PINN/pinn_impact_chain_solver.py`) for model setup/training/inference.
-- **Notebook workflow** (`PINN/pinn_impact_chain_simulation.ipynb`) for interactive experiments and visualization.
-- **Precomputed result sets** in `.npz` and `.mat` formats under `Results/`.
-- **Reference materials** under `References/` for theoretical context.
+## Modeling Scope
+
+### Physical system
+- Multi-DOF lumped chain model (baseline dataset: 20 DOFs).
+- Free-free ends.
+- Left external mass has nonzero initial velocity excitation.
+
+### Baseline velocity cases
+- Low: **1 m/s**
+- Medium: **2 m/s**
+- High: **10 m/s**
+
+### Outputs of interest
+- Time-domain response of masses/DOFs.
+- Spectral content for wave/dispersion interpretation.
+- Dispersion curves for consistency checks between numerical/PINN-derived trends.
+
+---
 
 ## Quick Start
 
-### 1) Create and activate a Python environment
+### 1) Create and activate an environment
 
 ```bash
 python -m venv .venv
@@ -39,26 +64,37 @@ source .venv/bin/activate
 
 ### 2) Install dependencies
 
-Install dependencies required by the solver/notebook (for example: `numpy`, `scipy`, `matplotlib`, `tensorflow`, `jupyter`).
-
 ```bash
 pip install numpy scipy matplotlib tensorflow jupyter
 ```
 
-> If your local setup already has a project-specific requirements file, prefer that over the generic command above.
-
-### 3) Run the notebook
+### 3) Run the notebook workflow
 
 ```bash
 jupyter notebook PINN/pinn_impact_chain_simulation.ipynb
 ```
 
-## Results
+---
 
-The `Results/` directory contains low/medium/high case outputs and a summary CSV (`batch_summary.csv`) that can be used for post-processing and comparison plots.
+## Results and Validation Notes
+
+- `Results/` includes low/medium/high free-free 20-DOF cases in `.npz` and `.mat` formats.
+- `batch_summary.csv` aggregates case-level metrics.
+- Dispersion-curve plots are used as a **double-check/validation step** for the predicted dynamic behavior.
+
+---
+
+## Next Experiments
+
+Planned extensions include:
+- increasing system size to **50 DOFs**,
+- increasing system size to **100 DOFs**,
+- checking how response and dispersion trends scale with DOF count.
+
+---
 
 ## Notes
 
-- Training and simulation can be computationally expensive.
-- TensorFlow/GPU behavior depends on your local CUDA/cuDNN setup.
-- `.mat` files are provided for MATLAB-compatible analysis.
+- PINN training and long-time simulation can be computationally intensive.
+- TensorFlow performance depends on CPU/GPU/CUDA setup.
+- `.mat` files are provided for MATLAB-compatible post-processing.
