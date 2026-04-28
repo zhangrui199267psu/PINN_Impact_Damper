@@ -53,12 +53,6 @@ pip install numpy scipy matplotlib tensorflow jupyter
 jupyter notebook PINN/pinn_impact_chain_simulation.ipynb
 ```
 
-### 4) Run the solver script
-
-```bash
-python PINN/pinn_impact_chain_solver.py
-```
-
 ## Results
 
 The `Results/` directory contains low/medium/high case outputs and a summary CSV (`batch_summary.csv`) that can be used for post-processing and comparison plots.
