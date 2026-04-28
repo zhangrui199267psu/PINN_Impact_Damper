@@ -1,124 +1,70 @@
-# PINN_Impact_Damper
+# PINN Impact Damper
 
-Physics-informed / physics-guided workflows for impact-damper lattice analysis, including:
+This repository contains code and results for studying wave propagation and transient response in an impact-damper chain using a Physics-Informed Neural Network (PINN) workflow.
 
-- dispersion-theory utilities,
-- PINN post-processing and PINN-vs-Bloch comparison,
-- free-free 20-DOF simulation workflows,
-- parametric velocity-conditioned surrogate experiments.
-
----
-
-## Repository Structure
+## Repository Layout
 
 ```text
 PINN_Impact_Damper/
-├── Dispersion/
-│   ├── dispersion_theory.py
-│   ├── dispersion_tutorial.ipynb
-│   └── plot_dispersion_together_3A.ipynb
 ├── PINN/
-│   ├── pinn_ndof_chain_tf2.py
-│   ├── pinn_ndof_chain_sim_tf2_freq2_A10.ipynb
-│   └── pinn_dispersion_from_mat.py
-├── PINN_free_free/
-│   ├── README.md
-│   ├── pinn_ndof_chain_tf2_free_free_no_force.py
-│   ├── pinn_ndof_chain_sim_tf2_free_free_icv.ipynb
-│   └── pinn_ndof_chain_parametric_tf2.py
-├── Predicted_Data/
+│   ├── pinn_impact_chain_solver.py
+│   └── pinn_impact_chain_simulation.ipynb
+├── Results/
+│   ├── batch_summary.csv
+│   ├── pinn_free_free_20dof_low.{npz,mat}
+│   ├── pinn_free_free_20dof_medium.{npz,mat}
+│   ├── pinn_free_free_20dof_high.{npz,mat}
+│   └── 1
 ├── References/
+│   ├── Article__On_the_dispersion_analysis_of_metaimpactor_lattices_using_parametric_Physics_Informed_Neural_Networks.pdf
+│   └── Dispersion relation - impactors in linear chain
 └── README.md
 ```
 
----
+## What is Included
 
-## What Each Part Does
-
-### 1) `Dispersion/`
-
-- `dispersion_theory.py`  
-  Analytical helpers for monoatomic / mass-in-mass / impact-damper style branch calculations and plotting.
-
-- `dispersion_tutorial.ipynb`  
-  Tutorial-style notebook for dispersion theory, overlays, and effective-parameter interpretation.
-
-- `plot_dispersion_together_3A.ipynb`  
-  Multi-case analysis notebook (MAT loading, spectral estimation, passband extraction, PINN-vs-Bloch overlays, impulse-guided parameter cues).
-
-### 2) `PINN/`
-
-- `pinn_ndof_chain_tf2.py`  
-  Base TF2 PINN implementation for chain dynamics.
-
-- `pinn_ndof_chain_sim_tf2_freq2_A10.ipynb`  
-  Canonical simulation notebook corresponding to original forcing setup.
-
-- `pinn_dispersion_from_mat.py`  
-  Utilities for loading/processing predicted results, ridge/heatmap extraction, comparison plotting, and impulse estimation.
-
-### 3) `PINN_free_free/`
-
-- Free-free/no-force workflows (20 DOFs) with initial-velocity excitation.
-- Includes both notebook workflow and standalone parametric velocity-conditioned surrogate script.
-
-See `PINN_free_free/README.md` for details.
-
----
+- **PINN solver script** (`PINN/pinn_impact_chain_solver.py`) for model setup/training/inference.
+- **Notebook workflow** (`PINN/pinn_impact_chain_simulation.ipynb`) for interactive experiments and visualization.
+- **Precomputed result sets** in `.npz` and `.mat` formats under `Results/`.
+- **Reference materials** under `References/` for theoretical context.
 
 ## Quick Start
 
-## A) Dispersion workflows
+### 1) Create and activate a Python environment
 
 ```bash
-jupyter notebook Dispersion/dispersion_tutorial.ipynb
+python -m venv .venv
+source .venv/bin/activate
 ```
+
+### 2) Install dependencies
+
+Install dependencies required by the solver/notebook (for example: `numpy`, `scipy`, `matplotlib`, `tensorflow`, `jupyter`).
 
 ```bash
-jupyter notebook Dispersion/plot_dispersion_together_3A.ipynb
+pip install numpy scipy matplotlib tensorflow jupyter
 ```
 
-## B) Original PINN workflow
+> If your local setup already has a project-specific requirements file, prefer that over the generic command above.
+
+### 3) Run the notebook
 
 ```bash
-jupyter notebook PINN/pinn_ndof_chain_sim_tf2_freq2_A10.ipynb
+jupyter notebook PINN/pinn_impact_chain_simulation.ipynb
 ```
 
-## C) Free-free workflow
+### 4) Run the solver script
 
 ```bash
-jupyter notebook PINN_free_free/pinn_ndof_chain_sim_tf2_free_free_icv.ipynb
+python PINN/pinn_impact_chain_solver.py
 ```
 
-## D) Parametric velocity-conditioned surrogate (script)
+## Results
 
-```bash
-python PINN_free_free/pinn_ndof_chain_parametric_tf2.py
-```
-
----
-
-## Data and References
-
-- `Predicted_Data/` contains example MAT files and related generated assets.
-- `References/` contains background documents used to guide interpretation and comparisons.
-
----
-
-## Typical Outputs
-
-Depending on notebook/script:
-
-- dispersion plots and overlays,
-- PINN spectral heatmaps and ridge diagnostics,
-- impact-time / impulse statistics,
-- saved per-case results (`.npz`, optional `.mat`),
-- parametric model artifacts (`.keras`, metadata `.npz`).
-
----
+The `Results/` directory contains low/medium/high case outputs and a summary CSV (`batch_summary.csv`) that can be used for post-processing and comparison plots.
 
 ## Notes
 
-- Some notebooks/scripts are computationally heavy (PINN training + long simulations).
-- For parametric surrogates, best performance requires training velocities spanning your intended inference range.
-- Free-free notebook currently uses a target simulation time criterion and can process multiple velocity cases in one run.
+- Training and simulation can be computationally expensive.
+- TensorFlow/GPU behavior depends on your local CUDA/cuDNN setup.
+- `.mat` files are provided for MATLAB-compatible analysis.
