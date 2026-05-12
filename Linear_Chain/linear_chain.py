@@ -351,6 +351,194 @@ def total_energy(x, xt, m=M_VAL, k=K_VAL):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Analytical eigenfrequencies — free-free nearest-neighbour chain
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def chain_eigenfreqs(n=N_DOF, m=M_VAL, k=K_VAL):
+    """
+    Exact eigenfrequencies for a free-free uniform chain:
+        ω_j = 2√(k/m) |sin(j π / (2 n))|   j = 0, 1, ..., n-1
+    j=0 is the rigid-body mode (ω=0).
+    """
+    j = np.arange(n)
+    return 2.0 * np.sqrt(k / m) * np.abs(np.sin(j * np.pi / (2.0 * n)))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-DOF FFT  (1-D, frequency content of each individual DOF)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def plot_fft_per_dof(t, x_nm, x_pinn, case, v_in, out_dir):
+    """
+    For each DOF in SELECTED_DOFS compute the one-sided FFT of the displacement
+    time series (Hann-windowed) and plot Newmark-β vs PINN side by side.
+
+    The theoretical eigenfrequencies of the chain are marked as vertical lines.
+
+    Saved as:  fft_per_dof_{case}.png
+    """
+    dt    = float(t[1] - t[0])
+    n_t   = len(t)
+    win   = np.hanning(n_t)
+
+    # one-sided frequency axis (rad/s)
+    freqs = np.fft.rfftfreq(n_t, d=dt) * 2.0 * np.pi
+
+    # theoretical eigenfrequencies
+    omega_eig = chain_eigenfreqs()
+    # cut-off (zone boundary): ω_max = 2√(k/m)
+    omega_max = 2.0 * np.sqrt(K_VAL / M_VAL)
+
+    n_sel = len(SELECTED_DOFS)
+    fig, axes = plt.subplots(n_sel, 1,
+                             figsize=(11, 3 * n_sel),
+                             sharex=True)
+
+    for ax, di in zip(axes, SELECTED_DOFS):
+        fft_nm   = np.abs(np.fft.rfft(x_nm[:, di]   * win))
+        fft_pinn = np.abs(np.fft.rfft(x_pinn[:, di] * win))
+
+        # normalise each spectrum to its own peak
+        fft_nm   /= (fft_nm.max()   or 1.0)
+        fft_pinn /= (fft_pinn.max() or 1.0)
+
+        ax.plot(freqs, fft_nm,   'k-',   lw=1.3, alpha=0.85, label='Newmark-β')
+        ax.plot(freqs, fft_pinn, 'C1--', lw=1.1, label='PINN')
+
+        # mark eigenfrequencies (skip ω=0 rigid-body)
+        for oe in omega_eig[1:]:
+            ax.axvline(oe, color='C2', lw=0.7, ls=':', alpha=0.6)
+
+        ax.set_ylabel(f'DOF {di+1}\n|FFT| (norm.)', fontsize=9)
+        ax.set_ylim(0, 1.15)
+        ax.legend(fontsize=8, loc='upper right')
+        ax.grid(alpha=0.3)
+
+    axes[-1].set_xlabel('ω  (rad/s)')
+    axes[-1].set_xlim(0.0, omega_max * 1.15)
+
+    fig.suptitle(
+        f'Per-DOF frequency spectrum  |  {case.capitalize()}  v0={v_in:.1f} m/s\n'
+        f'(dotted lines = chain eigenfrequencies)',
+        fontsize=11, y=1.01,
+    )
+    plt.tight_layout()
+    path = os.path.join(out_dir, f'fft_per_dof_{case}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {path}')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2-D FFT dispersion curve
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _compute_2dfft(x_tn, dt, d=1.0):
+    """
+    2-D FFT of a space-time response matrix.
+
+    Parameters
+    ----------
+    x_tn : (n_time, n_dof) displacement matrix
+    dt   : temporal sampling interval (s)
+    d    : lattice spacing (m) — 1.0 for unit-spacing chain
+
+    Returns
+    -------
+    k     : (n_k,)   wavenumber array  [0, π/d]  (rad/m)
+    omega : (n_ω,)   angular frequency array, ω ≥ 0  (rad/s)
+    S     : (n_ω, n_k)  normalised |FFT|  (dimensionless)
+    """
+    x_tn = np.asarray(x_tn, dtype=float)
+    n_t, n_x = x_tn.shape
+
+    # remove temporal mean per DOF; apply 2-D Hann window
+    x0 = x_tn - np.mean(x_tn, axis=0, keepdims=True)
+    wt = np.hanning(n_t)[:, None]
+    wx = np.hanning(n_x)[None, :]
+    xw = x0 * wt * wx
+
+    F_full = np.fft.fft2(xw)           # [n_t, n_x]
+    S_full = np.abs(F_full)
+
+    omega_raw = 2.0 * np.pi * np.fft.fftfreq(n_t, d=dt)
+    k_raw     = 2.0 * np.pi * np.fft.fftfreq(n_x, d=d)
+
+    # keep ω ≥ 0  and  k ∈ [0, π/d]
+    om_mask = omega_raw >= 0.0
+    k_mask  = (k_raw >= 0.0) & (k_raw <= np.pi / d + 1e-10)
+
+    omega = omega_raw[om_mask]
+    k     = k_raw[k_mask]
+    S     = S_full[np.ix_(om_mask, k_mask)]
+
+    if S.max() > 0:
+        S = S / S.max()
+
+    return k, omega, S
+
+
+def plot_dispersion_2dfft(t, x_nm, x_pinn, case, v_in, out_dir, d=1.0):
+    """
+    Compute the 2-D FFT of the full space-time response for both Newmark-β
+    and PINN, then plot the dispersion map side by side.
+
+    The analytical dispersion relation for the chain is overlaid:
+        ω(κ) = 2√(k/m) |sin(κ d / 2)|
+
+    Axes: x = κ / (π/d) ∈ [0, 1],  y = ω (rad/s)
+
+    Saved as:  dispersion_2dfft_{case}.png
+    """
+    dt = float(t[1] - t[0])
+
+    k_nm, om_nm, S_nm     = _compute_2dfft(x_nm,   dt, d)
+    k_pn, om_pn, S_pn     = _compute_2dfft(x_pinn, dt, d)
+
+    # analytical dispersion curve
+    kappa_dense = np.linspace(0.0, np.pi / d, 500)
+    omega_ana   = 2.0 * np.sqrt(K_VAL / M_VAL) * np.abs(np.sin(kappa_dense * d / 2.0))
+    kpi_ana     = kappa_dense / (np.pi / d)     # normalised wavenumber
+
+    omega_max = 2.0 * np.sqrt(K_VAL / M_VAL)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+
+    for ax, (S, k, om, label) in zip(
+        axes,
+        [
+            (S_nm, k_nm, om_nm, 'Newmark-β'),
+            (S_pn, k_pn, om_pn, 'PINN'),
+        ]
+    ):
+        kpi = k / (np.pi / d)
+        pcm = ax.pcolormesh(kpi, om, S, shading='auto', cmap='magma',
+                            vmin=0.0, vmax=1.0)
+        # analytical dispersion
+        ax.plot(kpi_ana, omega_ana, 'w--', lw=1.8, label='Analytical ω(κ)')
+
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, omega_max * 1.15)
+        ax.set_xlabel('κ / (π/d)  (normalised wavenumber)')
+        ax.set_title(label, fontsize=11)
+        ax.legend(fontsize=9, loc='upper left')
+        ax.grid(alpha=0.2, color='white', lw=0.5)
+        fig.colorbar(pcm, ax=ax, fraction=0.046, pad=0.04,
+                     label='|FFT2| (norm.)')
+
+    axes[0].set_ylabel('ω  (rad/s)')
+    fig.suptitle(
+        f'2-D FFT dispersion map  |  {case.capitalize()}  v0={v_in:.1f} m/s',
+        fontsize=12, y=1.01,
+    )
+    plt.tight_layout()
+    path = os.path.join(out_dir, f'dispersion_2dfft_{case}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {path}')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -468,6 +656,13 @@ def main():
             fig.savefig(path, dpi=150, bbox_inches='tight')
             plt.close(fig)
             print(f'  Saved: {path}')
+
+        # ── per-DOF FFT ────────────────────────────────────────────────────────
+        print('\n[FFT analysis]')
+        plot_fft_per_dof(t_nm, x_nm, x_pinn, case, v_in, SAVE_DIR)
+
+        # ── 2-D FFT dispersion curve ───────────────────────────────────────────
+        plot_dispersion_2dfft(t_nm, x_nm, x_pinn, case, v_in, SAVE_DIR)
 
         # ── point-wise L2 error ────────────────────────────────────────────────
         err = np.sqrt(np.mean((x_pinn - x_nm)**2, axis=1))
