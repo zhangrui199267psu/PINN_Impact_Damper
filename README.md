@@ -71,9 +71,11 @@ pip install numpy scipy matplotlib tensorflow jupyter
 ### 3) Run the notebook workflow
 
 ```bash
-jupyter notebook PINN/pinn_impact_chain_simulation.ipynb
+cd /d C:\Users\zharui\Documents\GitHub\PINN_Impact_Damper
 ```
-
+```bash
+conda activate tf2_env
+```
 ---
 
 ## Results and Validation Notes
