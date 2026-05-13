@@ -4,14 +4,13 @@ dispersion.py
 Post-processing script: loads saved responses from newmark.py and/or pinn.py
 and produces two sets of plots for each case:
 
-  1. Per-DOF FFT  — energy spectrum |FFT(x_i)|² vs frequency (Hz) for every
-                    DOF in SELECTED_DOFS.  Each DOF is a separate subplot.
-                    Theoretical chain eigenfrequencies are marked.
+  1. Per-DOF FFT  — energy spectrum |FFT(x_flex_i)|² vs frequency (Hz).
+                    x_flex_i = x_i - x_cm  removes the rigid-body drift that
+                    dominates the raw FFT of a free-free chain with nonzero
+                    total momentum.  Each DOF is a separate subplot.
 
-  2. 2-D FFT dispersion map  — |FFT2(x(t,i))| in the (κ, ω) plane with the
+  2. 2-D FFT dispersion map  — |FFT2(x_flex)| in the (κ, ω) plane with the
                                analytical dispersion relation overlaid.
-                               Newmark and PINN panels shown side by side
-                               when both sources are available.
 
 Folder structure
 ----------------
@@ -25,6 +24,7 @@ Usage
     python dispersion.py                    # loads both sources if present
     python dispersion.py --source newmark
     python dispersion.py --source pinn
+    python dispersion.py --window           # apply Hann window (off by default)
 """
 
 import os
@@ -46,19 +46,13 @@ INPUT_VELOCITY_CASES = ['low', 'medium', 'high']
 SELECTED_DOFS        = [0, 4, 9, 14, 19]   # 0-indexed
 LATTICE_SPACING      = 1.0                  # d (m)
 
-BASE_DIR       = 'Results_Linear_Chain'
-NEWMARK_DIR    = os.path.join(BASE_DIR, 'Newmark')
-PINN_DIR       = os.path.join(BASE_DIR, 'PINN')
-DISP_DIR       = os.path.join(BASE_DIR, 'Dispersion')
+BASE_DIR    = 'Results_Linear_Chain'
+NEWMARK_DIR = os.path.join(BASE_DIR, 'Newmark')
+PINN_DIR    = os.path.join(BASE_DIR, 'PINN')
+DISP_DIR    = os.path.join(BASE_DIR, 'Dispersion')
 
-SOURCE_DIRS = {
-    'newmark': NEWMARK_DIR,
-    'pinn':    PINN_DIR,
-}
-SOURCE_LABELS = {
-    'newmark': 'Newmark-β',
-    'pinn':    'PINN',
-}
+SOURCE_DIRS   = {'newmark': NEWMARK_DIR, 'pinn': PINN_DIR}
+SOURCE_LABELS = {'newmark': 'Newmark-β', 'pinn': 'PINN'}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -66,15 +60,38 @@ SOURCE_LABELS = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_case(source_key, case):
-    """
-    Load Results_Linear_Chain/{Newmark|PINN}/{source}_{case}.npz.
-    Returns dict of arrays, or None if the file does not exist.
-    """
+    """Return dict of arrays from {source}_{case}.npz, or None if missing."""
     path = os.path.join(SOURCE_DIRS[source_key], f'{source_key}_{case}.npz')
     if not os.path.exists(path):
         return None
     data = np.load(path)
     return {k: data[k] for k in data.files}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rigid-body removal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def remove_rigid_body(x):
+    """
+    Subtract the instantaneous center-of-mass displacement from every DOF.
+
+    For a free-free chain the rigid-body mode is uniform translation:
+        x_cm(t) = mean_i { x_i(t) }
+        x_flex_i(t) = x_i(t) - x_cm(t)
+
+    Parameters
+    ----------
+    x : (n_time, n_dof)
+
+    Returns
+    -------
+    x_flex : (n_time, n_dof)  — rigid-body-free displacements
+    x_cm   : (n_time,)        — center-of-mass trajectory
+    """
+    x_cm   = np.mean(x, axis=1)                      # (n_time,)
+    x_flex = x - x_cm[:, np.newaxis]                 # broadcast over DOFs
+    return x_flex, x_cm
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -85,7 +102,7 @@ def chain_eigenfreqs_hz(n=N_DOF, m=M_VAL, k=K_VAL):
     """
     Eigenfrequencies in Hz for a free-free uniform chain:
         f_j = (1/2π) · 2√(k/m) |sin(jπ/(2n))|   j = 0…n-1
-    j=0 is the rigid-body mode (f=0).
+    j=0 is the rigid-body mode (f=0, excluded from markers).
     """
     j = np.arange(n)
     omega_j = 2.0 * np.sqrt(k / m) * np.abs(np.sin(j * np.pi / (2.0 * n)))
@@ -93,11 +110,7 @@ def chain_eigenfreqs_hz(n=N_DOF, m=M_VAL, k=K_VAL):
 
 
 def analytical_dispersion(d=LATTICE_SPACING, m=M_VAL, k=K_VAL, n_pts=500):
-    """
-    Analytical dispersion relation:
-        ω(κ) = 2√(k/m) |sin(κ d / 2)|
-    Returns kappa (rad/m), omega (rad/s).
-    """
+    """ω(κ) = 2√(k/m)|sin(κd/2)|  →  (kappa, omega) arrays."""
     kappa = np.linspace(0.0, np.pi / d, n_pts)
     omega = 2.0 * np.sqrt(k / m) * np.abs(np.sin(kappa * d / 2.0))
     return kappa, omega
@@ -107,16 +120,19 @@ def analytical_dispersion(d=LATTICE_SPACING, m=M_VAL, k=K_VAL, n_pts=500):
 # 1 — Per-DOF energy spectrum  (1-D FFT)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def plot_fft_per_dof(datasets, case, v_in, out_dir):
+def plot_fft_per_dof(datasets, case, v_in, out_dir, use_window=False):
     """
     One subplot per DOF in SELECTED_DOFS.
 
     x-axis : frequency  f  (Hz)
-    y-axis : energy spectrum  |FFT(x_i)|²  (m²)
+    y-axis : energy spectrum  |FFT(x_flex_i)|²  (m²),  log scale
 
-    Theoretical chain eigenfrequencies are marked as vertical dotted lines.
-    One figure per source; when two sources are present they share the same
-    figure with overlaid lines so the spectra can be compared directly.
+    Rigid-body drift is removed by subtracting x_cm(t) = mean_i{x_i(t)}
+    before the FFT so that flexible modal peaks are clearly visible.
+
+    Parameters
+    ----------
+    use_window : bool — apply a Hann window before FFT (default False)
 
     Saved as:  fft_energy_per_dof_{case}.png
     """
@@ -134,24 +150,29 @@ def plot_fft_per_dof(datasets, case, v_in, out_dir):
     for ax, di in zip(axes, SELECTED_DOFS):
         for idx, (label, data) in enumerate(datasets.items()):
             t   = data['t']
-            x   = data['x']
+            x   = data['x']                                    # (n_time, n_dof)
             dt  = float(t[1] - t[0])
             n_t = len(t)
 
-            # Hann window to reduce spectral leakage
-            win     = np.hanning(n_t)
-            X       = np.fft.rfft(x[:, di] * win)
-            freqs   = np.fft.rfftfreq(n_t, d=dt)          # Hz
-            energy  = np.abs(X) ** 2                       # m²  (ESD)
+            # ── remove rigid-body drift ────────────────────────────────────────
+            x_flex, _ = remove_rigid_body(x)
+            sig = x_flex[:, di]
+
+            # ── optional Hann window ───────────────────────────────────────────
+            if use_window:
+                sig = sig * np.hanning(n_t)
+
+            freqs  = np.fft.rfftfreq(n_t, d=dt)               # Hz
+            energy = np.abs(np.fft.rfft(sig)) ** 2            # m²
 
             ax.plot(freqs, energy,
                     color=colors[idx % len(colors)],
                     ls=styles[idx % len(styles)],
                     lw=1.3, alpha=0.9, label=label)
 
-        # mark eigenfrequencies (skip f=0 rigid-body mode)
+        # mark flexible eigenfrequencies (skip j=0 rigid-body at f=0)
         for fe in f_eig[1:]:
-            ax.axvline(fe, color='C2', lw=0.8, ls=':', alpha=0.6)
+            ax.axvline(fe, color='C2', lw=0.8, ls=':', alpha=0.65)
 
         ax.set_ylabel(f'DOF {di+1}\n|X(f)|²  (m²)', fontsize=9)
         ax.set_yscale('log')
@@ -161,11 +182,12 @@ def plot_fft_per_dof(datasets, case, v_in, out_dir):
     axes[-1].set_xlabel('Frequency  f  (Hz)')
     axes[-1].set_xlim(0.0, f_max_hz)
 
+    win_note = '  [Hann window]' if use_window else '  [no window]'
     label_str = '  vs  '.join(datasets.keys())
     fig.suptitle(
-        f'Energy spectrum per DOF  [{label_str}]\n'
+        f'Energy spectrum per DOF  [{label_str}]{win_note}\n'
         f'{case.capitalize()}  v₀ = {v_in:.1f} m/s'
-        f'   (green dotted = chain eigenfrequencies)',
+        f'   (rigid-body drift removed;  green dotted = eigenfrequencies)',
         fontsize=11, y=1.01,
     )
     plt.tight_layout()
@@ -179,32 +201,43 @@ def plot_fft_per_dof(datasets, case, v_in, out_dir):
 # 2 — 2-D FFT dispersion map
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _compute_2dfft(x_tn, dt, d=LATTICE_SPACING):
+def _compute_2dfft(x_tn, dt, d=LATTICE_SPACING, use_window=False):
     """
     2-D FFT of a space-time displacement matrix.
 
+    Rigid-body drift is removed first by subtracting the instantaneous
+    center-of-mass from every DOF at every time step.  A temporal-mean
+    subtraction per DOF is then applied to remove any residual DC.
+
     Parameters
     ----------
-    x_tn : (n_time, n_dof)   rows = time, cols = DOF (spatial index)
-    dt   : temporal sampling interval (s)
-    d    : lattice spacing (m)
+    x_tn      : (n_time, n_dof)
+    dt        : temporal sampling interval (s)
+    d         : lattice spacing (m)
+    use_window: apply 2-D Hann window before FFT (default False)
 
     Returns
     -------
-    k     : (n_k,)     wavenumber κ ∈ [0, π/d]  (rad/m)
-    omega : (n_ω,)     angular frequency ω ≥ 0   (rad/s)
+    k     : (n_k,)     κ ∈ [0, π/d]  (rad/m)
+    omega : (n_ω,)     ω ≥ 0          (rad/s)
     S     : (n_ω, n_k) normalised |FFT2|
     """
     x_tn = np.asarray(x_tn, dtype=float)
     n_t, n_x = x_tn.shape
 
-    # subtract temporal mean; apply 2-D Hann window
-    x0 = x_tn - np.mean(x_tn, axis=0, keepdims=True)
-    wt = np.hanning(n_t)[:, None]
-    wx = np.hanning(n_x)[None, :]
-    xw = x0 * wt * wx
+    # ── remove rigid-body drift (k=0 mode) ────────────────────────────────────
+    x_flex, _ = remove_rigid_body(x_tn)
 
-    F_full = np.fft.fft2(xw)
+    # ── subtract residual temporal mean per DOF ────────────────────────────────
+    x0 = x_flex - np.mean(x_flex, axis=0, keepdims=True)
+
+    # ── optional 2-D Hann window ──────────────────────────────────────────────
+    if use_window:
+        wt = np.hanning(n_t)[:, None]
+        wx = np.hanning(n_x)[None, :]
+        x0 = x0 * wt * wx
+
+    F_full = np.fft.fft2(x0)
     S_full = np.abs(F_full)
 
     omega_raw = 2.0 * np.pi * np.fft.fftfreq(n_t, d=dt)
@@ -223,15 +256,15 @@ def _compute_2dfft(x_tn, dt, d=LATTICE_SPACING):
     return k, omega, S
 
 
-def plot_dispersion_2dfft(datasets, case, v_in, out_dir, d=LATTICE_SPACING):
+def plot_dispersion_2dfft(datasets, case, v_in, out_dir,
+                          d=LATTICE_SPACING, use_window=False):
     """
-    2-D FFT dispersion map — one panel per source.
+    2-D FFT dispersion map — one panel per source, side by side.
 
     x-axis : normalised wavenumber  κ/(π/d) ∈ [0, 1]
     y-axis : angular frequency  ω  (rad/s)
 
-    The analytical dispersion relation ω(κ)=2√(k/m)|sin(κd/2)| is overlaid
-    as a white dashed curve on every panel.
+    Analytical dispersion ω(κ)=2√(k/m)|sin(κd/2)| overlaid in white dashed.
 
     Saved as:  dispersion_2dfft_{case}.png
     """
@@ -251,7 +284,7 @@ def plot_dispersion_2dfft(datasets, case, v_in, out_dir, d=LATTICE_SPACING):
         x  = data['x']
         dt = float(t[1] - t[0])
 
-        k, omega, S = _compute_2dfft(x, dt, d)
+        k, omega, S = _compute_2dfft(x, dt, d, use_window=use_window)
         kpi = k / (np.pi / d)
 
         pcm = ax.pcolormesh(kpi, omega, S,
@@ -269,10 +302,12 @@ def plot_dispersion_2dfft(datasets, case, v_in, out_dir, d=LATTICE_SPACING):
                      label='|FFT2| (norm.)')
 
     axes[0].set_ylabel('ω  (rad/s)')
+    win_note  = '  [Hann window]' if use_window else '  [no window]'
     label_str = '  vs  '.join(datasets.keys())
     fig.suptitle(
-        f'2-D FFT dispersion map  [{label_str}]\n'
-        f'{case.capitalize()}  v₀ = {v_in:.1f} m/s',
+        f'2-D FFT dispersion map  [{label_str}]{win_note}\n'
+        f'{case.capitalize()}  v₀ = {v_in:.1f} m/s'
+        f'   (rigid-body drift removed)',
         fontsize=12, y=1.01,
     )
     plt.tight_layout()
@@ -290,12 +325,11 @@ def main():
     parser = argparse.ArgumentParser(
         description='Dispersion / FFT analysis from saved Newmark / PINN responses.'
     )
-    parser.add_argument(
-        '--source',
-        choices=['newmark', 'pinn', 'both'],
-        default='both',
-        help='Which solver results to load (default: both)',
-    )
+    parser.add_argument('--source', choices=['newmark', 'pinn', 'both'],
+                        default='both',
+                        help='Which solver results to load (default: both)')
+    parser.add_argument('--window', action='store_true',
+                        help='Apply Hann window before FFT (default: off)')
     args = parser.parse_args()
 
     os.makedirs(DISP_DIR, exist_ok=True)
@@ -305,6 +339,8 @@ def main():
         keys_to_try = ['newmark']
     elif args.source == 'pinn':
         keys_to_try = ['pinn']
+
+    print(f'Hann window: {"ON" if args.window else "OFF"}')
 
     for case in INPUT_VELOCITY_CASES:
         print(f'\n{"="*60}')
@@ -330,11 +366,13 @@ def main():
             print(f'  No data found for case "{case}" — skipping.')
             continue
 
-        print('\n  [1] Per-DOF energy spectrum (FFT)')
-        plot_fft_per_dof(datasets, case, v_in_case, DISP_DIR)
+        print('\n  [1] Per-DOF energy spectrum (FFT, rigid-body removed)')
+        plot_fft_per_dof(datasets, case, v_in_case, DISP_DIR,
+                         use_window=args.window)
 
-        print('  [2] 2-D FFT dispersion map')
-        plot_dispersion_2dfft(datasets, case, v_in_case, DISP_DIR)
+        print('  [2] 2-D FFT dispersion map (rigid-body removed)')
+        plot_dispersion_2dfft(datasets, case, v_in_case, DISP_DIR,
+                              use_window=args.window)
 
     print(f'\nDone.  All figures saved to  {DISP_DIR}/')
 
