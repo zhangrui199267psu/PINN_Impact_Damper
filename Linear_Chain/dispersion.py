@@ -330,6 +330,105 @@ def plot_dispersion_2dfft(datasets, case, v_in, n_dof, out_dir,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 3 — Extracted dispersion curve  (peak-picking the 2-D FFT)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _extract_peaks(k, omega, S, peak_threshold=0.05):
+    """
+    For every wavenumber bin, find the angular frequency of peak spectral energy.
+
+    A column is skipped when its maximum is below  peak_threshold × global_max
+    so that wavenumber bins with negligible energy are excluded from the curve.
+
+    Parameters
+    ----------
+    k, omega       : 1-D arrays of wavenumber (rad/m) and frequency (rad/s)
+    S              : (n_ω, n_k) normalised |FFT2|
+    peak_threshold : fraction of global max below which a column is ignored
+
+    Returns
+    -------
+    k_out : (m,)  wavenumber values where a valid peak exists
+    w_out : (m,)  corresponding peak angular frequency
+    """
+    global_max = S.max()
+    k_out, w_out = [], []
+    for j in range(S.shape[1]):
+        if S[:, j].max() < peak_threshold * global_max:
+            continue
+        i_peak = int(np.argmax(S[:, j]))
+        k_out.append(k[j])
+        w_out.append(omega[i_peak])
+    return np.array(k_out), np.array(w_out)
+
+
+def plot_dispersion_curve(datasets, case, v_in, n_dof, out_dir,
+                          d=LATTICE_SPACING, use_window=False,
+                          peak_threshold=0.05):
+    """
+    Extract the dispersion curve from the 2-D FFT by peak-picking ω at each
+    κ bin, then compare directly against the analytical relation.
+
+    One plot per case; all sources overlaid on the same axes.
+
+    x-axis : normalised wavenumber  κ/(π/d) ∈ [0, 1]
+    y-axis : angular frequency  ω  (rad/s)
+
+    Analytical relation : solid black line
+    Extracted points    : coloured markers (one colour per source)
+
+    Saved as:  dispersion_curve_{n_dof}dof_{case}.png
+    """
+    kappa_ana, omega_ana = analytical_dispersion(d)
+    kpi_ana   = kappa_ana / (np.pi / d)
+    omega_max = 2.0 * np.sqrt(K_VAL / M_VAL)
+
+    src_markers = ['o', 's', '^', 'D']
+    src_colors  = ['C0', 'C1', 'C2', 'C3']
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    # analytical dispersion — reference line
+    ax.plot(kpi_ana, omega_ana, 'k-', lw=2.2, label='Analytical  ω(κ)', zorder=5)
+
+    for idx, (label, data) in enumerate(datasets.items()):
+        t  = data['t']
+        x  = data['x']
+        dt = float(t[1] - t[0])
+
+        k, omega, S = _compute_2dfft(x, dt, d, use_window=use_window)
+        kpi = k / (np.pi / d)
+
+        kpi_peaks, omega_peaks = _extract_peaks(kpi, omega, S, peak_threshold)
+
+        ax.scatter(kpi_peaks, omega_peaks,
+                   marker=src_markers[idx % len(src_markers)],
+                   color=src_colors[idx  % len(src_colors)],
+                   s=70, zorder=4, alpha=0.9,
+                   label=f'{label}  (peak-picked)')
+
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(0.0, omega_max * 1.2)
+    ax.set_xlabel('κ / (π/d)  —  normalised wavenumber', fontsize=11)
+    ax.set_ylabel('ω  (rad/s)', fontsize=11)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+
+    win_note  = '  [Hann window]' if use_window else '  [no window]'
+    label_str = '  vs  '.join(datasets.keys())
+    ax.set_title(
+        f'Dispersion curve  [{label_str}]{win_note}\n'
+        f'{n_dof} DOFs  |  {case.capitalize()}  v₀ = {v_in:.1f} m/s',
+        fontsize=11,
+    )
+    plt.tight_layout()
+    path = os.path.join(out_dir, f'dispersion_curve_{n_dof}dof_{case}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {path}')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -345,6 +444,11 @@ def main():
                         help='Which solver results to load (default: both)')
     parser.add_argument('--window', action='store_true',
                         help='Apply Hann window before FFT (default: off)')
+    parser.add_argument('--peak-threshold', type=float, default=0.05,
+                        dest='peak_threshold',
+                        help='Fraction of global FFT max below which a '
+                             'wavenumber bin is excluded from peak-picking '
+                             '(default: 0.05)')
     args = parser.parse_args()
 
     n_dof = args.ndof
@@ -359,7 +463,8 @@ def main():
     elif args.source == 'pinn':
         keys_to_try = ['pinn']
 
-    print(f'N_DOF = {n_dof}  |  Hann window: {"ON" if args.window else "OFF"}')
+    print(f'N_DOF = {n_dof}  |  Hann window: {"ON" if args.window else "OFF"}'
+          f'  |  peak threshold: {args.peak_threshold}')
 
     for case in INPUT_VELOCITY_CASES:
         print(f'\n{"="*60}')
@@ -393,6 +498,11 @@ def main():
         print('  [2] 2-D FFT dispersion map (rigid-body removed)')
         plot_dispersion_2dfft(datasets, case, v_in_case, n_dof, DISP_DIR,
                               use_window=args.window)
+
+        print('  [3] Extracted dispersion curve vs analytical')
+        plot_dispersion_curve(datasets, case, v_in_case, n_dof, DISP_DIR,
+                              use_window=args.window,
+                              peak_threshold=args.peak_threshold)
 
     print(f'\nDone.  All figures saved to  {DISP_DIR}/')
 
