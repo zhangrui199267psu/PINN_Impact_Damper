@@ -333,18 +333,21 @@ def plot_dispersion_2dfft(datasets, case, v_in, n_dof, out_dir,
 # 3 — Extracted dispersion curve  (peak-picking the 2-D FFT)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _extract_peaks(k, omega, S, peak_threshold=0.05):
+def _extract_peaks(k, omega, S, peak_threshold=0.05, omega_min=0.0):
     """
     For every wavenumber bin, find the angular frequency of peak spectral energy.
 
     A column is skipped when its maximum is below  peak_threshold × global_max
     so that wavenumber bins with negligible energy are excluded from the curve.
+    The argmax search is restricted to  omega >= omega_min  to avoid picking the
+    spurious near-DC horizontal band that appears in free-free chain simulations.
 
     Parameters
     ----------
     k, omega       : 1-D arrays of wavenumber (rad/m) and frequency (rad/s)
     S              : (n_ω, n_k) normalised |FFT2|
     peak_threshold : fraction of global max below which a column is ignored
+    omega_min      : lower frequency bound (rad/s) for peak search
 
     Returns
     -------
@@ -352,19 +355,26 @@ def _extract_peaks(k, omega, S, peak_threshold=0.05):
     w_out : (m,)  corresponding peak angular frequency
     """
     global_max = S.max()
+    valid_rows = omega >= omega_min          # mask: rows to search
     k_out, w_out = [], []
     for j in range(S.shape[1]):
-        if S[:, j].max() < peak_threshold * global_max:
+        col = S[:, j]
+        if col.max() < peak_threshold * global_max:
             continue
-        i_peak = int(np.argmax(S[:, j]))
+        col_valid = col[valid_rows]
+        if col_valid.size == 0 or col_valid.max() == 0:
+            continue
+        i_peak = int(np.argmax(col_valid))   # index within valid subset
+        # map back to the full omega array
+        full_indices = np.where(valid_rows)[0]
         k_out.append(k[j])
-        w_out.append(omega[i_peak])
+        w_out.append(omega[full_indices[i_peak]])
     return np.array(k_out), np.array(w_out)
 
 
 def plot_dispersion_curve(datasets, case, v_in, n_dof, out_dir,
                           d=LATTICE_SPACING, use_window=False,
-                          peak_threshold=0.05):
+                          peak_threshold=0.05, omega_min=0.0):
     """
     Extract the dispersion curve from the 2-D FFT by peak-picking ω at each
     κ bin, then compare directly against the analytical relation.
@@ -379,6 +389,13 @@ def plot_dispersion_curve(datasets, case, v_in, n_dof, out_dir,
 
     Saved as:  dispersion_curve_{n_dof}dof_{case}.png
     """
+    # Auto-compute omega_min from first non-zero eigenfrequency when not set.
+    # ω₁ = 2√(k/m)|sin(π/(2N))| — use half of it as a floor to avoid picking
+    # the near-DC horizontal band that dominates in free-free simulations.
+    if omega_min <= 0.0:
+        omega_1   = 2.0 * np.sqrt(K_VAL / M_VAL) * abs(np.sin(np.pi / (2.0 * n_dof)))
+        omega_min = 0.5 * omega_1
+
     kappa_ana, omega_ana = analytical_dispersion(d)
     kpi_ana   = kappa_ana / (np.pi / d)
     omega_max = 2.0 * np.sqrt(K_VAL / M_VAL)
@@ -399,7 +416,8 @@ def plot_dispersion_curve(datasets, case, v_in, n_dof, out_dir,
         k, omega, S = _compute_2dfft(x, dt, d, use_window=use_window)
         kpi = k / (np.pi / d)
 
-        kpi_peaks, omega_peaks = _extract_peaks(kpi, omega, S, peak_threshold)
+        kpi_peaks, omega_peaks = _extract_peaks(kpi, omega, S, peak_threshold,
+                                                    omega_min=omega_min)
 
         ax.plot(kpi_peaks, omega_peaks,
                 marker=src_markers[idx % len(src_markers)],
@@ -449,6 +467,12 @@ def main():
                         help='Fraction of global FFT max below which a '
                              'wavenumber bin is excluded from peak-picking '
                              '(default: 0.05)')
+    parser.add_argument('--omega-min', type=float, default=0.0,
+                        dest='omega_min',
+                        help='Minimum angular frequency (rad/s) for peak '
+                             'search in each wavenumber column.  0 (default) '
+                             'means auto-compute as 0.5 × ω₁ where ω₁ is the '
+                             'first acoustic eigenfrequency.')
     args = parser.parse_args()
 
     n_dof = args.ndof
@@ -463,8 +487,10 @@ def main():
     elif args.source == 'pinn':
         keys_to_try = ['pinn']
 
+    omega_min_str = f'{args.omega_min:.4f}' if args.omega_min > 0 else 'auto'
     print(f'N_DOF = {n_dof}  |  Hann window: {"ON" if args.window else "OFF"}'
-          f'  |  peak threshold: {args.peak_threshold}')
+          f'  |  peak threshold: {args.peak_threshold}'
+          f'  |  omega_min: {omega_min_str} rad/s')
 
     for case in INPUT_VELOCITY_CASES:
         print(f'\n{"="*60}')
@@ -502,7 +528,8 @@ def main():
         print('  [3] Extracted dispersion curve vs analytical')
         plot_dispersion_curve(datasets, case, v_in_case, n_dof, DISP_DIR,
                               use_window=args.window,
-                              peak_threshold=args.peak_threshold)
+                              peak_threshold=args.peak_threshold,
+                              omega_min=args.omega_min)
 
     print(f'\nDone.  All figures saved to  {DISP_DIR}/')
 
