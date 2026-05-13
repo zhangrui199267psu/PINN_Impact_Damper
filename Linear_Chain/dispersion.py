@@ -401,11 +401,11 @@ def plot_dispersion_curve(datasets, case, v_in, n_dof, out_dir,
 
         kpi_peaks, omega_peaks = _extract_peaks(kpi, omega, S, peak_threshold)
 
-        ax.scatter(kpi_peaks, omega_peaks,
-                   marker=src_markers[idx % len(src_markers)],
-                   color=src_colors[idx  % len(src_colors)],
-                   s=70, zorder=4, alpha=0.9,
-                   label=f'{label}  (peak-picked)')
+        ax.plot(kpi_peaks, omega_peaks,
+                marker=src_markers[idx % len(src_markers)],
+                color=src_colors[idx  % len(src_colors)],
+                ls='-', lw=1.4, ms=7, zorder=4, alpha=0.9,
+                label=f'{label}  (peak-picked)')
 
     ax.set_xlim(-0.02, 1.02)
     ax.set_ylim(0.0, omega_max * 1.2)
