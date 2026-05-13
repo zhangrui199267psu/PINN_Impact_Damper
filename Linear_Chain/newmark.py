@@ -8,7 +8,7 @@ System:  M x_tt + C x_t + K x = 0
   - Left-end initial velocity excitation: x_dot_1(0) = v0, all else zero
   - Three input-energy cases: low / medium / high
 
-Outputs saved to  Results_Linear_Chain/:
+Outputs saved to  Results_Linear_Chain/Newmark/:
   - newmark_{case}.npz   (t, x, xt, E, v_in)
   - newmark_{case}.mat   (if scipy available)
   - displacement_{case}.png
@@ -53,7 +53,7 @@ INPUT_VELOCITY_CASES = {
     'high':   -10.0,
 }
 SELECTED_DOFS = [0, 4, 9, 14, 19]   # 0-indexed, for plots
-SAVE_DIR = 'Results_Linear_Chain'
+SAVE_DIR = os.path.join('Results_Linear_Chain', 'Newmark')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
