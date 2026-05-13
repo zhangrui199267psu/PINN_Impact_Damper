@@ -18,11 +18,14 @@ Outputs saved to  Results_Linear_Chain/PINN/:
   - pinn_loss_{case}.png
 
 Run:
-    python pinn.py
+    python pinn.py                  # default: 20 DOFs
+    python pinn.py --ndof 10
+    python pinn.py --ndof 40
 """
 
 import os
 import time
+import argparse
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -268,10 +271,32 @@ class PINNLinearChain:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    parser = argparse.ArgumentParser(
+        description='PINN solver for a free-free linear chain.'
+    )
+    parser.add_argument('--ndof', type=int, default=N_DOF,
+                        help='Number of DOFs (default: %(default)s)')
+    args = parser.parse_args()
+
+    n_dof = args.ndof
+    if n_dof < 2:
+        parser.error('--ndof must be >= 2')
+
+    # 5 evenly-spaced DOFs to plot, always including the first and last
+    n_plot = min(5, n_dof)
+    selected_dofs = list(dict.fromkeys(
+        np.linspace(0, n_dof - 1, n_plot, dtype=int).tolist()
+    ))
+
+    # output layer size must match n_dof
+    layers = [1, 128, 128, n_dof]
+
     print('TensorFlow:', tf.__version__)
+    print(f'N_DOF = {n_dof}  |  layers = {layers}')
+    print(f'Plotting DOFs: {[d+1 for d in selected_dofs]}')
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    M, C, K = build_matrices()
+    M, C, K = build_matrices(n=n_dof)
     t_out   = np.linspace(0.0, T_END, int(round(T_END / DT_OUT)) + 1)
 
     for case, v_in in INPUT_VELOCITY_CASES.items():
@@ -280,10 +305,10 @@ def main():
               f'  |  E0 = {0.5*M_VAL*v_in**2:.4f} J')
         print(f'{"="*60}')
 
-        x0, xt0 = left_velocity_ic(N_DOF, v_in)
+        x0, xt0 = left_velocity_ic(n=n_dof, v0=v_in)
 
         t_start = time.time()
-        pinn = PINNLinearChain(T_END, x0, xt0, M, C, K)
+        pinn = PINNLinearChain(T_END, x0, xt0, M, C, K, layers=layers)
         pinn.train(n_iter=N_ITER_ADAM)
         train_time = time.time() - t_start
         print(f'\n  Training done in {train_time:.2f} s')
@@ -295,19 +320,21 @@ def main():
         print(f'  E0={E[0]:.6f} J   E_final={E[-1]:.6f} J'
               f'   relative drift={drift:.2e}')
 
+        tag = f'{n_dof}dof_{case}'
+
         # ── displacement plot ──────────────────────────────────────────────────
-        fig, axes = plt.subplots(len(SELECTED_DOFS), 1,
-                                 figsize=(12, 3*len(SELECTED_DOFS)),
+        fig, axes = plt.subplots(len(selected_dofs), 1,
+                                 figsize=(12, 3*len(selected_dofs)),
                                  sharex=True)
-        for ax, di in zip(axes, SELECTED_DOFS):
+        for ax, di in zip(axes, selected_dofs):
             ax.plot(t_out, x[:, di], 'C1-', lw=1.2)
             ax.set_ylabel(f'DOF {di+1}  x (m)')
             ax.grid(alpha=0.3)
         axes[-1].set_xlabel('Time (s)')
-        fig.suptitle(f'PINN displacement  |  {case.capitalize()}'
-                     f'  v0={v_in:.1f} m/s', fontsize=12)
+        fig.suptitle(f'PINN displacement  |  {n_dof} DOFs  |  '
+                     f'{case.capitalize()}  v0={v_in:.1f} m/s', fontsize=12)
         plt.tight_layout()
-        path = os.path.join(SAVE_DIR, f'pinn_displacement_{case}.png')
+        path = os.path.join(SAVE_DIR, f'pinn_displacement_{tag}.png')
         fig.savefig(path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f'  Saved: {path}')
@@ -319,24 +346,27 @@ def main():
             ax.semilogy(log, lw=1.2, color='C0')
             ax.set_xlabel('Logged step')
             ax.set_ylabel('Loss')
-            ax.set_title(f'PINN training loss  |  {case.capitalize()}')
+            ax.set_title(f'PINN training loss  |  {n_dof} DOFs  |  '
+                         f'{case.capitalize()}')
             ax.grid(alpha=0.3)
             plt.tight_layout()
-            path = os.path.join(SAVE_DIR, f'pinn_loss_{case}.png')
+            path = os.path.join(SAVE_DIR, f'pinn_loss_{tag}.png')
             fig.savefig(path, dpi=150, bbox_inches='tight')
             plt.close(fig)
             print(f'  Saved: {path}')
 
         # ── save data ──────────────────────────────────────────────────────────
-        stem = f'pinn_{case}'
+        stem = f'pinn_{tag}'
         np.savez(os.path.join(SAVE_DIR, stem + '.npz'),
                  t=t_out, x=x, xt=xt, E=E,
                  v_in=np.array(v_in),
+                 n_dof=np.array(n_dof),
                  train_time_s=np.array(train_time))
         if _HAS_SAVEMAT:
             savemat(os.path.join(SAVE_DIR, stem + '.mat'),
                     {'t': t_out, 'x': x, 'xt': xt, 'E': E,
                      'v_in': np.array([[v_in]]),
+                     'n_dof': np.array([[n_dof]]),
                      'train_time_s': np.array([[train_time]])})
         print(f'  Data saved: {stem}.npz'
               + (' + .mat' if _HAS_SAVEMAT else ''))

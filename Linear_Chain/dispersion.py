@@ -21,10 +21,11 @@ Folder structure
 
 Usage
 -----
-    python dispersion.py                    # loads both sources if present
+    python dispersion.py                         # 20 DOFs, both sources
+    python dispersion.py --ndof 10
     python dispersion.py --source newmark
     python dispersion.py --source pinn
-    python dispersion.py --window           # apply Hann window (off by default)
+    python dispersion.py --ndof 40 --window      # Hann window (off by default)
 """
 
 import os
@@ -59,9 +60,13 @@ SOURCE_LABELS = {'newmark': 'Newmark-β', 'pinn': 'PINN'}
 # Data loader
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_case(source_key, case):
-    """Return dict of arrays from {source}_{case}.npz, or None if missing."""
-    path = os.path.join(SOURCE_DIRS[source_key], f'{source_key}_{case}.npz')
+def load_case(source_key, case, n_dof):
+    """
+    Return dict of arrays from {source}_{n_dof}dof_{case}.npz, or None if missing.
+    n_dof must match the value used when the solver was run.
+    """
+    path = os.path.join(SOURCE_DIRS[source_key],
+                        f'{source_key}_{n_dof}dof_{case}.npz')
     if not os.path.exists(path):
         return None
     data = np.load(path)
@@ -98,7 +103,7 @@ def remove_rigid_body(x):
 # Analytical helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def chain_eigenfreqs_hz(n=N_DOF, m=M_VAL, k=K_VAL):
+def chain_eigenfreqs_hz(n, m=M_VAL, k=K_VAL):
     """
     Eigenfrequencies in Hz for a free-free uniform chain:
         f_j = (1/2π) · 2√(k/m) |sin(jπ/(2n))|   j = 0…n-1
@@ -120,9 +125,9 @@ def analytical_dispersion(d=LATTICE_SPACING, m=M_VAL, k=K_VAL, n_pts=500):
 # 1 — Per-DOF energy spectrum  (1-D FFT)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def plot_fft_per_dof(datasets, case, v_in, out_dir, use_window=False):
+def plot_fft_per_dof(datasets, case, v_in, n_dof, out_dir, use_window=False):
     """
-    One subplot per DOF in SELECTED_DOFS.
+    One subplot per DOF in SELECTED_DOFS (auto-computed from n_dof).
 
     x-axis : frequency  f  (Hz)
     y-axis : energy spectrum  |FFT(x_flex_i)|²  (m²),  log scale
@@ -132,22 +137,29 @@ def plot_fft_per_dof(datasets, case, v_in, out_dir, use_window=False):
 
     Parameters
     ----------
+    n_dof      : int  — number of DOFs (sets eigenfrequency markers and DOFs to plot)
     use_window : bool — apply a Hann window before FFT (default False)
 
-    Saved as:  fft_energy_per_dof_{case}.png
+    Saved as:  fft_energy_per_dof_{n_dof}dof_{case}.png
     """
-    f_eig    = chain_eigenfreqs_hz()
+    f_eig    = chain_eigenfreqs_hz(n=n_dof)
     f_max_hz = (2.0 * np.sqrt(K_VAL / M_VAL)) / (2.0 * np.pi) * 1.15
+
+    # 5 evenly-spaced DOFs, always including first and last
+    n_plot        = min(5, n_dof)
+    selected_dofs = list(dict.fromkeys(
+        np.linspace(0, n_dof - 1, n_plot, dtype=int).tolist()
+    ))
 
     colors = ['k', 'C1', 'C0', 'C3']
     styles = ['-', '--', '-.', ':']
 
-    n_sel = len(SELECTED_DOFS)
+    n_sel = len(selected_dofs)
     fig, axes = plt.subplots(n_sel, 1,
                              figsize=(11, 3 * n_sel),
                              sharex=True)
 
-    for ax, di in zip(axes, SELECTED_DOFS):
+    for ax, di in zip(axes, selected_dofs):
         for idx, (label, data) in enumerate(datasets.items()):
             t   = data['t']
             x   = data['x']                                    # (n_time, n_dof)
@@ -186,12 +198,12 @@ def plot_fft_per_dof(datasets, case, v_in, out_dir, use_window=False):
     label_str = '  vs  '.join(datasets.keys())
     fig.suptitle(
         f'Energy spectrum per DOF  [{label_str}]{win_note}\n'
-        f'{case.capitalize()}  v₀ = {v_in:.1f} m/s'
+        f'{n_dof} DOFs  |  {case.capitalize()}  v₀ = {v_in:.1f} m/s'
         f'   (rigid-body drift removed;  green dotted = eigenfrequencies)',
         fontsize=11, y=1.01,
     )
     plt.tight_layout()
-    path = os.path.join(out_dir, f'fft_energy_per_dof_{case}.png')
+    path = os.path.join(out_dir, f'fft_energy_per_dof_{n_dof}dof_{case}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  Saved: {path}')
@@ -256,7 +268,7 @@ def _compute_2dfft(x_tn, dt, d=LATTICE_SPACING, use_window=False):
     return k, omega, S
 
 
-def plot_dispersion_2dfft(datasets, case, v_in, out_dir,
+def plot_dispersion_2dfft(datasets, case, v_in, n_dof, out_dir,
                           d=LATTICE_SPACING, use_window=False):
     """
     2-D FFT dispersion map — one panel per source, side by side.
@@ -306,12 +318,12 @@ def plot_dispersion_2dfft(datasets, case, v_in, out_dir,
     label_str = '  vs  '.join(datasets.keys())
     fig.suptitle(
         f'2-D FFT dispersion map  [{label_str}]{win_note}\n'
-        f'{case.capitalize()}  v₀ = {v_in:.1f} m/s'
+        f'{n_dof} DOFs  |  {case.capitalize()}  v₀ = {v_in:.1f} m/s'
         f'   (rigid-body drift removed)',
         fontsize=12, y=1.01,
     )
     plt.tight_layout()
-    path = os.path.join(out_dir, f'dispersion_2dfft_{case}.png')
+    path = os.path.join(out_dir, f'dispersion_2dfft_{n_dof}dof_{case}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  Saved: {path}')
@@ -325,12 +337,19 @@ def main():
     parser = argparse.ArgumentParser(
         description='Dispersion / FFT analysis from saved Newmark / PINN responses.'
     )
+    parser.add_argument('--ndof', type=int, default=N_DOF,
+                        help='Number of DOFs used when the solvers were run '
+                             '(default: %(default)s)')
     parser.add_argument('--source', choices=['newmark', 'pinn', 'both'],
                         default='both',
                         help='Which solver results to load (default: both)')
     parser.add_argument('--window', action='store_true',
                         help='Apply Hann window before FFT (default: off)')
     args = parser.parse_args()
+
+    n_dof = args.ndof
+    if n_dof < 2:
+        parser.error('--ndof must be >= 2')
 
     os.makedirs(DISP_DIR, exist_ok=True)
 
@@ -340,7 +359,7 @@ def main():
     elif args.source == 'pinn':
         keys_to_try = ['pinn']
 
-    print(f'Hann window: {"ON" if args.window else "OFF"}')
+    print(f'N_DOF = {n_dof}  |  Hann window: {"ON" if args.window else "OFF"}')
 
     for case in INPUT_VELOCITY_CASES:
         print(f'\n{"="*60}')
@@ -351,27 +370,28 @@ def main():
         v_in_case = None
 
         for src_key in keys_to_try:
-            data = load_case(src_key, case)
+            data = load_case(src_key, case, n_dof)
             if data is None:
+                stem = f'{src_key}_{n_dof}dof_{case}.npz'
                 print(f'  [{src_key}] not found — '
-                      f'{SOURCE_DIRS[src_key]}/{src_key}_{case}.npz')
+                      f'{SOURCE_DIRS[src_key]}/{stem}')
                 continue
             label = SOURCE_LABELS[src_key]
             datasets[label] = data
             v_in_case = float(data['v_in'])
-            print(f'  Loaded  {SOURCE_DIRS[src_key]}/{src_key}_{case}.npz'
-                  f'  ({len(data["t"])} steps)')
+            print(f'  Loaded  {SOURCE_DIRS[src_key]}/{src_key}_{n_dof}dof_{case}.npz'
+                  f'  ({len(data["t"])} steps,  n_dof={data["x"].shape[1]})')
 
         if not datasets:
             print(f'  No data found for case "{case}" — skipping.')
             continue
 
         print('\n  [1] Per-DOF energy spectrum (FFT, rigid-body removed)')
-        plot_fft_per_dof(datasets, case, v_in_case, DISP_DIR,
+        plot_fft_per_dof(datasets, case, v_in_case, n_dof, DISP_DIR,
                          use_window=args.window)
 
         print('  [2] 2-D FFT dispersion map (rigid-body removed)')
-        plot_dispersion_2dfft(datasets, case, v_in_case, DISP_DIR,
+        plot_dispersion_2dfft(datasets, case, v_in_case, n_dof, DISP_DIR,
                               use_window=args.window)
 
     print(f'\nDone.  All figures saved to  {DISP_DIR}/')

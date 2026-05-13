@@ -16,10 +16,13 @@ Outputs saved to  Results_Linear_Chain/Newmark/:
   - energy_{case}.png
 
 Run:
-    python newmark.py
+    python newmark.py                  # default: 20 DOFs
+    python newmark.py --ndof 10
+    python newmark.py --ndof 40
 """
 
 import os
+import argparse
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -144,8 +147,27 @@ def total_energy(x, xt, m=M_VAL, k=K_VAL):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    parser = argparse.ArgumentParser(
+        description='Newmark-beta solver for a free-free linear chain.'
+    )
+    parser.add_argument('--ndof', type=int, default=N_DOF,
+                        help='Number of DOFs (default: %(default)s)')
+    args = parser.parse_args()
+
+    n_dof = args.ndof
+    if n_dof < 2:
+        parser.error('--ndof must be >= 2')
+
+    # 5 evenly-spaced DOFs to plot, always including the first and last
+    n_plot = min(5, n_dof)
+    selected_dofs = list(dict.fromkeys(
+        np.linspace(0, n_dof - 1, n_plot, dtype=int).tolist()
+    ))
+
+    print(f'N_DOF = {n_dof}  |  plotting DOFs: {[d+1 for d in selected_dofs]}')
     os.makedirs(SAVE_DIR, exist_ok=True)
-    M, C, K = build_matrices()
+
+    M, C, K = build_matrices(n=n_dof)
 
     for case, v_in in INPUT_VELOCITY_CASES.items():
         print(f'\n{"="*60}')
@@ -153,7 +175,7 @@ def main():
               f'  |  E0 = {0.5*M_VAL*v_in**2:.4f} J')
         print(f'{"="*60}')
 
-        x0, xt0 = left_velocity_ic(N_DOF, v_in)
+        x0, xt0 = left_velocity_ic(n=n_dof, v0=v_in)
         t, x, xt = newmark_beta(M, C, K, x0, xt0)
         E = total_energy(x, xt)
 
@@ -161,36 +183,38 @@ def main():
         print(f'  E0={E[0]:.6f} J   E_final={E[-1]:.6f} J'
               f'   relative drift={drift:.2e}')
 
+        tag = f'{n_dof}dof_{case}'
+
         # ── displacement plot ──────────────────────────────────────────────────
-        fig, axes = plt.subplots(len(SELECTED_DOFS), 1,
-                                 figsize=(12, 3*len(SELECTED_DOFS)),
+        fig, axes = plt.subplots(len(selected_dofs), 1,
+                                 figsize=(12, 3*len(selected_dofs)),
                                  sharex=True)
-        for ax, di in zip(axes, SELECTED_DOFS):
+        for ax, di in zip(axes, selected_dofs):
             ax.plot(t, x[:, di], 'k-', lw=1.2)
             ax.set_ylabel(f'DOF {di+1}  x (m)')
             ax.grid(alpha=0.3)
         axes[-1].set_xlabel('Time (s)')
-        fig.suptitle(f'Newmark-β displacement  |  {case.capitalize()}'
-                     f'  v0={v_in:.1f} m/s', fontsize=12)
+        fig.suptitle(f'Newmark-β displacement  |  {n_dof} DOFs  |  '
+                     f'{case.capitalize()}  v0={v_in:.1f} m/s', fontsize=12)
         plt.tight_layout()
-        path = os.path.join(SAVE_DIR, f'newmark_displacement_{case}.png')
+        path = os.path.join(SAVE_DIR, f'newmark_displacement_{tag}.png')
         fig.savefig(path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f'  Saved: {path}')
 
         # ── velocity plot ──────────────────────────────────────────────────────
-        fig, axes = plt.subplots(len(SELECTED_DOFS), 1,
-                                 figsize=(12, 3*len(SELECTED_DOFS)),
+        fig, axes = plt.subplots(len(selected_dofs), 1,
+                                 figsize=(12, 3*len(selected_dofs)),
                                  sharex=True)
-        for ax, di in zip(axes, SELECTED_DOFS):
+        for ax, di in zip(axes, selected_dofs):
             ax.plot(t, xt[:, di], 'C0-', lw=1.2)
             ax.set_ylabel(f'DOF {di+1}  ẋ (m/s)')
             ax.grid(alpha=0.3)
         axes[-1].set_xlabel('Time (s)')
-        fig.suptitle(f'Newmark-β velocity  |  {case.capitalize()}'
-                     f'  v0={v_in:.1f} m/s', fontsize=12)
+        fig.suptitle(f'Newmark-β velocity  |  {n_dof} DOFs  |  '
+                     f'{case.capitalize()}  v0={v_in:.1f} m/s', fontsize=12)
         plt.tight_layout()
-        path = os.path.join(SAVE_DIR, f'newmark_velocity_{case}.png')
+        path = os.path.join(SAVE_DIR, f'newmark_velocity_{tag}.png')
         fig.savefig(path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f'  Saved: {path}')
@@ -201,27 +225,29 @@ def main():
         ax.axhline(E[0], color='k', ls='--', lw=0.8, label=f'E0={E[0]:.4f} J')
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Total Energy (J)')
-        ax.set_title(f'Newmark-β energy  |  {case.capitalize()}'
-                     f'  v0={v_in:.1f} m/s')
+        ax.set_title(f'Newmark-β energy  |  {n_dof} DOFs  |  '
+                     f'{case.capitalize()}  v0={v_in:.1f} m/s')
         ax.legend()
         ax.grid(alpha=0.3)
         plt.tight_layout()
-        path = os.path.join(SAVE_DIR, f'newmark_energy_{case}.png')
+        path = os.path.join(SAVE_DIR, f'newmark_energy_{tag}.png')
         fig.savefig(path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f'  Saved: {path}')
 
         # ── save data ──────────────────────────────────────────────────────────
-        stem = f'newmark_{case}'
+        stem = f'newmark_{tag}'
         np.savez(os.path.join(SAVE_DIR, stem + '.npz'),
                  t=t, x=x, xt=xt, E=E,
-                 v_in=np.array(v_in))
+                 v_in=np.array(v_in),
+                 n_dof=np.array(n_dof))
         if _HAS_SAVEMAT:
             savemat(os.path.join(SAVE_DIR, stem + '.mat'),
                     {'t': t, 'x': x, 'xt': xt, 'E': E,
-                     'v_in': np.array([[v_in]])})
+                     'v_in': np.array([[v_in]]),
+                     'n_dof': np.array([[n_dof]])})
         print(f'  Data saved: {stem}.npz'
-              + (f' + .mat' if _HAS_SAVEMAT else ''))
+              + (' + .mat' if _HAS_SAVEMAT else ''))
 
     print(f'\nDone. Results in {SAVE_DIR}/')
 
