@@ -70,7 +70,7 @@ scp -r ~/Documents/GitHub/PINN_Impact_Damper/PINN zharui@euler.ethz.ch:~
 Example if the project is in `C:\Users\Rui\Documents\GitHub\`:
 
 ```powershell
-scp -r "C:\Users\Rui\Documents\GitHub\PINN_Impact_Damper/PINN" zharui@euler.ethz.ch:~
+scp -r "C:\Users\zharui\Documents\GitHub\PINN_Impact_Damper\PINN" zharui@euler.ethz.ch:~
 ```
 
 If your Windows username or folder is different, modify the path accordingly.
@@ -78,7 +78,7 @@ If your Windows username or folder is different, modify the path accordingly.
 Then log in to Euler and check:
 
 ```bash
-cd ~/PINN_Impact_Damper
+cd ~/PINN_Impact_Damper/PINN
 ls
 ```
 
