@@ -78,7 +78,7 @@ If your Windows username or folder is different, modify the path accordingly.
 Then log in to Euler and check:
 
 ```bash
-cd ~/PINN_Impact_Damper/PINN
+cd ~/PINN_Impact_Damper
 ls
 ```
 
@@ -116,9 +116,9 @@ Python 3.11.6
 srun \
   --time=08:00:00 \
   --ntasks=1 \
-  --cpus-per-task=8 \
-  --mem-per-cpu=8G \
-  --gpus=1 \
+  --cpus-per-task=4 \
+  --mem-per-cpu=16G \
+  --gpus=rtx_4090:1 \
   --pty bash
 ```
 
@@ -223,7 +223,7 @@ source ~/venvs/pinn_impact_gpu/bin/activate
 ## 3) Run the simulation
 
 ```bash
-python pinn_impact_chain_simulation.py
+python PINN/pinn_impact_chain_simulation.py
 ```
 
 This will:
@@ -356,7 +356,7 @@ open ~/Downloads/Results_free_free_100s
 Example download to your Windows Downloads folder:
 
 ```powershell
-scp -r zharui@euler.ethz.ch:~/PINN_Impact_Damper/Results_free_free_100s "$env:USERPROFILE\Downloads\"
+scp -r zharui@euler.ethz.ch:~/PINN_Impact_Damper/Results_free_free_100s C:/Users/zharui/Downloads/
 ```
 
 Then open the folder manually in File Explorer:
