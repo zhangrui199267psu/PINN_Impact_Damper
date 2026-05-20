@@ -62,7 +62,7 @@ Run this from your LOCAL computer, not inside Euler.
 Example if the project is in `~/Documents/GitHub/`:
 
 ```bash
-scp -r ~/Documents/GitHub/PINN_Impact_Damper zharui@euler.ethz.ch:~
+scp -r ~/Documents/GitHub/PINN_Impact_Damper/PINN zharui@euler.ethz.ch:~
 ```
 
 ### Windows PowerShell
@@ -70,7 +70,7 @@ scp -r ~/Documents/GitHub/PINN_Impact_Damper zharui@euler.ethz.ch:~
 Example if the project is in `C:\Users\Rui\Documents\GitHub\`:
 
 ```powershell
-scp -r "C:\Users\Rui\Documents\GitHub\PINN_Impact_Damper" zharui@euler.ethz.ch:~
+scp -r "C:\Users\Rui\Documents\GitHub\PINN_Impact_Damper/PINN" zharui@euler.ethz.ch:~
 ```
 
 If your Windows username or folder is different, modify the path accordingly.
