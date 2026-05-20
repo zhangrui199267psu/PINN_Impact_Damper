@@ -398,7 +398,7 @@ scp "C:\Users\Rui\Documents\GitHub\PINN_Impact_Damper\*.py" zharui@euler.ethz.ch
 Upload one file only:
 
 ```powershell
-scp "C:\Users\Rui\Documents\GitHub\PINN_Impact_Damper\pinn_impact_chain_simulation.py" zharui@euler.ethz.ch:~/PINN_Impact_Damper/
+C:\Users\zharui\Documents\GitHub\PINN_Impact_Damper\PINN\dispersion_pinn.py" zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN
 ```
 
 ---
