@@ -56,7 +56,7 @@ rm -r x
 ```
 
 ```bash
-cd ~/PINN_CFD_FSI_unsteady
+cd ~/PINN_Impact_Damper
 ```
 
 ---
@@ -64,63 +64,48 @@ cd ~/PINN_CFD_FSI_unsteady
 ### 3) Prepare the code
 
 ```bash
-vim pinn_fsi1_steady.sbatch
+vim pinn_impact.sbatch
 ```
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=pinn_fsi1
-#SBATCH --output=logs/pinn_fsi1_%j.out
-#SBATCH --error=logs/pinn_fsi1_%j.err
+#SBATCH --job-name=impact_pinn
 #SBATCH --time=24:00:00
-#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem-per-cpu=16G
 #SBATCH --gpus=rtx_4090:1
+#SBATCH --output=logs/impact_pinn_%x_%j.out
+#SBATCH --error=logs/impact_pinn_%x_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH -A es_chatzi
 
-cd ~/PINN_CFD_FSI_unsteady
+set -euo pipefail
 
-mkdir -p logs
+# Usage:
+#   sbatch run_impact_pinn_case.sh low
+#   sbatch run_impact_pinn_case.sh medium
+#   sbatch run_impact_pinn_case.sh high
+#   sbatch run_impact_pinn_case.sh all
+# Default: low
+CASE=${1:-high}
 
 module purge
 module load stack/2024-06
 module load gcc/12.2.0
 module load python_cuda/3.11.6
 
-source ~/venvs/pinn_tf_gpu/bin/activate
+source ~/venvs/pinn_impact_gpu/bin/activate
 
-export PYTHONUNBUFFERED=1
+cd ~/PINN_CFD_FSI_unsteady
 
-python -u PINN_FSI_Steady/unified_steady_fsi_final.py \
-  --fe-data FE/fsi1_fsi_data.npz \
-  --rho-f 1000 \
-  --mu-f 1.0 \
-  --um 0.2 \
-  --rho-s 1000 \
-  --nu-s 0.4 \
-  --mu-s 5e5 \
-  --adam-iters 30000 \
-  --adam-lr 5e-4 \
-  --lbfgs-maxiter 50000 \
-  --lbfgs-maxfun 100000 \
-  --lbfgs-maxcor 50 \
-  --lbfgs-maxls 50 \
-  --hidden-layers 4 \
-  --hidden-width 64 \
-  --n-fluid 80000 \
-  --n-solid 20000 \
-  --n-interface 12000 \
-  --n-fix 3000\
-  --w-iface-vel 20 \
-  --w-iface-trac 0.05 \
-  --w-solid-vel 1 \
-  --w-detJ 0.1\
-  --w-data-d 50 \
-  --w-data-v 50 \
-  --w-data-p 0.001 \
-  --output-dir Results_PINN_FSI_SteadyFSI/FSI1
+cd ~/PINN_Impact_Damper
+
+echo "Running impact PINN case: ${CASE}"
+echo "Start time: $(date)"
+
+python -u PINN/pinn_impact_chain_simulation_cli_revised.py --case "${CASE}"
+
+echo "End time: $(date)"
 ```
 
 Edit:
@@ -136,7 +121,7 @@ Exit: (Esc - :wq - Enter)
 ### 4) Run the code
 Submit:
 ```bash
-sbatch pinn_fsi1_steady.sbatch
+sbatch pinn_impact.sbatch
 ```
 See jobs:
 ```bash
@@ -145,22 +130,22 @@ squeue
 
 See outputs
 ```bash
-tail -f logs/pinn_fsi1_912753.out
+tail -f logs/impact_pinn_impact_pinn_912451.out
 ```
 ```bash
-tail -f logs/pinn_fsi1_912753.err
+tail -f logs/impact_pinn_impact_pinn_912451.err
 ```
 
 Cancel
 ```bash
-scancel 912753
+scancel 912451
 ```
 ### 5) Check output files on Euler
 
 After the run finishes, check:
 
 ```bash
-ls Results_PINN_FSI_SteadyFSI/FSI1
+ls Results_free_free_100s
 ```
 
 ---
