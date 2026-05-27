@@ -2,23 +2,40 @@
 
 ### 1) Upload the project to Euler
 
-If the project exists only on your local computer, upload it from your **local computer terminal**:
+Run this from your LOCAL computer.
+
+## macOS / Linux terminal
+
+Upload folder:
 
 ```bash
-scp -r ~/Documents/GitHub/PINN_Impact_Damper zharui@euler.ethz.ch:~
+scp -r ~/Documents/GitHub/PINN_Impact_Damper/PINN \
+zharui@euler.ethz.ch:~/PINN_Impact_Damper/
 ```
-Upload folder
+
+Upload one file only:
+
 ```bash
-scp -r ~/Documents/GitHub/PINN_Impact_Damper/PINN zharui@euler.ethz.ch:~/PINN_Impact_Damper/
+scp ~/Documents/GitHub/PINN_Impact_Damper/PINN/*.py \
+zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN/
 ```
-Upload specific files (not folder)
-```bash
-scp ~/Documents/GitHub/PINN_Impact_Damper/PINN/*.py zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN/
+
+## Windows PowerShell
+
+Upload folder:
+
+```powershell
+scp -r "C:\Users\Rui\Documents\GitHub\PINN_Impact_Damper\PINN" zharui@euler.ethz.ch:~/PINN_Impact_Damper
 ```
-Upload everything EXCEPT subfolders
-```bash
-scp ~/Documents/GitHub/PINN_Impact_Damper/PINN/* zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN/
+
+Upload files:
+
+```powershell
+scp "C:\Users\zharui\Documents\GitHub\PINN_Impact_Damper\PINN\*.py" zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN
 ```
+
+---
+
 ### 2) Log in to Euler
 
 Run this on your **local computer terminal**:
@@ -153,17 +170,34 @@ ls Results_free_free_100s
 ### 6) Download results back to your local computer
 
 
-Exit to **local computer terminal**:
+Run this from your LOCAL computer, not inside Euler.
+
+## macOS / Linux terminal
 
 ```bash
-exit
+scp -r \
+zharui@euler.ethz.ch:~/PINN_Impact_Damper/Results_free_free_100s \
+~/Downloads/
 ```
 
-Run on your **local computer terminal**:
+Open locally on macOS:
 
 ```bash
-scp -r zharui@euler.ethz.ch:~/PINN_CFD_FSI_unsteady/Results_PINN_FSI_SteadyFSI/FSI1\
-  ~/Downloads
+open ~/Downloads/Results_free_free_100s
+```
+
+## Windows PowerShell
+
+Example download to your Windows Downloads folder:
+
+```powershell
+scp -r zharui@euler.ethz.ch:~/PINN_Impact_Damper/Results_free_free_100s C:/Users/zharui/Downloads/
+```
+
+Then open the folder manually in File Explorer:
+
+```powershell
+explorer "$env:USERPROFILE\Downloads\Results_free_free_100s"
 ```
 
 ---
