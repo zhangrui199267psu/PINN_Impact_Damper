@@ -180,12 +180,6 @@ zharui@euler.ethz.ch:~/PINN_Impact_Damper/Results_free_free_100s \
 ~/Downloads/
 ```
 
-Open locally on macOS:
-
-```bash
-open ~/Downloads/Results_free_free_100s
-```
-
 ## Windows PowerShell
 
 Example download to your Windows Downloads folder:
@@ -193,11 +187,3 @@ Example download to your Windows Downloads folder:
 ```powershell
 scp -r zharui@euler.ethz.ch:~/PINN_Impact_Damper/Results_free_free_100s C:/Users/zharui/Downloads/
 ```
-
-Then open the folder manually in File Explorer:
-
-```powershell
-explorer "$env:USERPROFILE\Downloads\Results_free_free_100s"
-```
-
----
