@@ -169,8 +169,13 @@ ls Results_free_free_100s
 
 ### 6) Download results back to your local computer
 
+Exit to **local computer terminal**:
 
-Run this from your LOCAL computer, not inside Euler.
+```bash
+exit
+```
+
+Run on your **local computer terminal**:
 
 ## macOS / Linux terminal
 
