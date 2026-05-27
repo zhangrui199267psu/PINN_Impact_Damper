@@ -1,23 +1,23 @@
-# PINN FSI-Steady on ETH Euler
+# PINN Impact-Damper on ETH Euler
 
 ### 1) Upload the project to Euler
 
 If the project exists only on your local computer, upload it from your **local computer terminal**:
 
 ```bash
-scp -r ~/Documents/GitHub/PINN_CFD_FSI_unsteady zharui@euler.ethz.ch:~
+scp -r ~/Documents/GitHub/PINN_Impact_Damper zharui@euler.ethz.ch:~
 ```
 Upload folder
 ```bash
-scp -r ~/Documents/GitHub/PINN_CFD_FSI_unsteady/PINN_FSI_Steady zharui@euler.ethz.ch:~/PINN_CFD_FSI_unsteady/
+scp -r ~/Documents/GitHub/PINN_Impact_Damper/PINN zharui@euler.ethz.ch:~/PINN_Impact_Damper/
 ```
 Upload specific files (not folder)
 ```bash
-scp ~/Documents/GitHub/PINN_CFD_FSI_unsteady/PINN_FSI_Steady/*.py zharui@euler.ethz.ch:~/PINN_CFD_FSI_unsteady/PINN_FSI_Steady/
+scp ~/Documents/GitHub/PINN_Impact_Damper/PINN/*.py zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN/
 ```
 Upload everything EXCEPT subfolders
 ```bash
-scp ~/Documents/GitHub/PINN_CFD_FSI_unsteady/PINN_FSI_Steady/* zharui@euler.ethz.ch:~/PINN_CFD_FSI_unsteady/PINN_FSI_Steady/
+scp ~/Documents/GitHub/PINN_Impact_Damper/PINN/* zharui@euler.ethz.ch:~/PINN_Impact_Damper/PINN/
 ```
 ### 2) Log in to Euler
 
