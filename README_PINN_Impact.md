@@ -79,7 +79,7 @@ cd ~/PINN_Impact_Damper
 ---
 
 ### 3) Prepare the code
-
+#### 3.1) PINN for responses
 ```bash
 vim pinn_impact.sbatch
 ```
@@ -124,7 +124,52 @@ python -u PINN/pinn_impact_chain_simulation_cli_revised.py --case "${CASE}"
 
 echo "End time: $(date)"
 ```
+#### 3.2) For dispersion figures
+```bash
+vim dispersion_pinn_impact.sbatch
+```
 
+```bash
+#!/bin/bash
+#SBATCH --job-name=impact_pinn
+#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem-per-cpu=16G
+#SBATCH --gpus=rtx_4090:1
+#SBATCH --output=logs/dispersion_impact_pinn_%x_%j.out
+#SBATCH --error=logs/dispersion_impact_pinn_%x_%j.err
+#SBATCH --mail-type=END,FAIL
+#SBATCH -A es_chatzi
+
+set -euo pipefail
+
+# Usage:
+#   sbatch run_impact_pinn_case.sh low
+#   sbatch run_impact_pinn_case.sh medium
+#   sbatch run_impact_pinn_case.sh high
+#   sbatch run_impact_pinn_case.sh all
+# Default: low
+CASE=${1:-all}
+
+module purge
+module load stack/2024-06
+module load gcc/12.2.0
+module load python_cuda/3.11.6
+
+source ~/venvs/pinn_impact_gpu/bin/activate
+
+cd ~/PINN_CFD_FSI_unsteady
+
+cd ~/PINN_Impact_Damper
+
+echo "Running impact PINN case: ${CASE}"
+echo "Start time: $(date)"
+
+python -u PINN/dispersion_pinn_impact.py --case "${CASE}"
+
+echo "End time: $(date)"
+```
+#### 3.3) Others
 Edit:
 ```bash
 i
