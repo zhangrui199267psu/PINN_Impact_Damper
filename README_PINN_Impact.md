@@ -157,6 +157,10 @@ Cancel
 ```bash
 scancel 912451
 ```
+Submit:
+```bash
+sbatch dispersion_pinn_impact.sbatch
+```
 ### 5) Check output files on Euler
 
 After the run finishes, check:
