@@ -1,3 +1,16 @@
+# PINN Impact-Damper on local
+
+```bash
+cd C:\Users\zharui\Documents\GitHub\PINN_Impact_Damper
+```
+
+```bash
+conda activate tf2_env
+```
+
+```bash
+python PINN/dispersion_pinn_impact_fields_transmission.py
+```
 # PINN Impact-Damper on ETH Euler
 
 ### 1) Upload the project to Euler
